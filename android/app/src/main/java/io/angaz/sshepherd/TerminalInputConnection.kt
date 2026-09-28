@@ -86,6 +86,24 @@ internal class TerminalInputConnection(
         super.commitText(text, newCursorPosition)
         return synchronize()
     }
+    @android.annotation.TargetApi(34)
+    override fun replaceText(start: Int, end: Int, text: CharSequence, newCursorPosition: Int,
+                             textAttribute: android.view.inputmethod.TextAttribute?): Boolean {
+        // API 34's BaseInputConnection implementation edits the Editable directly,
+        // bypassing our commitText override. Gboard can use this for corrections.
+        if (!active || start !in 0..buffer.length || end !in 0..buffer.length) return false
+        val a = minOf(start, end)
+        val b = maxOf(start, end)
+        if (text.length > 16384 || buffer.length - (b - a) + text.length > 16896) return false
+        beginBatchEdit()
+        try {
+            removeComposingSpans(buffer)
+            Selection.setSelection(buffer, a, b)
+            // Do not finish the old composition first: replace it in one edit.
+            super.commitText(text, newCursorPosition)
+            return synchronize()
+        } finally { endBatchEdit() }
+    }
     override fun finishComposingText(): Boolean {
         if (!active) return false
         super.finishComposingText()

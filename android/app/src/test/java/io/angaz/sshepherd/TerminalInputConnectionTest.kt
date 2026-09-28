@@ -286,6 +286,38 @@ class TerminalInputConnectionTest {
         assertEquals("echo hi\n", remote)
         assertEquals(listOf("echo hi", "\n"), text)
     }
+    @Test @Config(sdk = [34]) fun api34ReplacementImmediatelyUpdatesTerminal() {
+        input.commitText("echo word. ", 1)
+        assertTrue(input.replaceText(5, 9, "world", 1, null))
+        assertEquals("echo world. ", remote)
+        assertEquals(10, position)
+        val count = edits.size
+        input.finishComposingText()
+        assertEquals(count, edits.size)
+    }
+    @Test @Config(sdk = [34]) fun api34ReplacementReplacesLiveCompositionAtomically() {
+        input.setComposingText("word", 1)
+        val count = edits.size
+        assertTrue(input.replaceText(0, 4, "world", 1, null))
+        assertEquals("world", remote)
+        assertEquals(count + 1, edits.size)
+        assertEquals(-1, android.view.inputmethod.BaseInputConnection.getComposingSpanStart(input.editable))
+        input.finishComposingText()
+        assertEquals(count + 1, edits.size)
+    }
+    @Test @Config(sdk = [34]) fun api34ReplacementHonorsBoundsClosureAndQueueRejection() {
+        input.commitText("word", 1)
+        assertFalse(input.replaceText(-1, 4, "world", 1, null))
+        assertFalse(input.replaceText(0, 5, "world", 1, null))
+        assertFalse(input.replaceText(0, 4, "x".repeat(16385), 1, null))
+        assertEquals("word", remote)
+        assertEquals("word", input.editable.toString())
+        accept = false
+        assertFalse(input.replaceText(0, 4, "world", 1, null))
+        assertEquals("word", remote)
+        input.closeConnection()
+        assertFalse(input.replaceText(0, 0, "late", 1, null))
+    }
     @Test fun invalidInputIsBounded() {
         assertFalse(input.deleteSurroundingText(1000000, 0))
         assertFalse(input.commitText("a".repeat(16385), 1))
