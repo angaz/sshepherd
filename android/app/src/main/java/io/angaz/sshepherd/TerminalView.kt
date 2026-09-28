@@ -123,7 +123,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
                 }
             }
             if (composition.isNotEmpty()) {
-                // IME pre-edit is shown locally; it is not sent before commit.
+                // Control-containing or Ctrl-latched pre-edit waits for commitment.
                 fill.color = 0xff263a4b.toInt()
                 canvas.drawRect(0f, height - cellHeight.toFloat(), width.toFloat(), height.toFloat(), fill)
                 text.color = 0xff7ce4c6.toInt(); text.alpha = 255; text.isFakeBoldText = false; text.textSkewX = 0f

@@ -25,7 +25,8 @@ internal data class TerminalEdit(
     val extraBefore: Int = 0, val extraAfter: Int = 0, val protectedPoints: Int = 0
 )
 
-/** Retain a bounded editing context so IME candidates can replace committed words.
+/** Mirror IME composition as reversible terminal edits, not just final commits.
+ * Retain bounded editing context so candidates can replace phone-typed words.
  * Screen output is never imported into the keyboard's editable context.
  */
 internal class TerminalInputConnection(
@@ -45,7 +46,9 @@ internal class TerminalInputConnection(
     private fun notifyIme() {
         val start = getComposingSpanStart(buffer)
         val end = getComposingSpanEnd(buffer)
-        composingChanged(if (start >= 0 && end >= start) buffer.substring(start, end) else "")
+        // Only deferred control-key composition needs a local overlay. Normal
+        // composition is already visible through the remote terminal's echo.
+        composingChanged(if (buffer.toString() != sent && start >= 0 && end >= start) buffer.substring(start, end) else "")
         if (batch == 0) (target.context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as InputMethodManager)
             .updateSelection(target, Selection.getSelectionStart(buffer), Selection.getSelectionEnd(buffer), start, end)
     }
@@ -71,10 +74,13 @@ internal class TerminalInputConnection(
     }
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         if (!active || !fits(text)) return false
-        val result = super.setComposingText(text, newCursorPosition)
-        notifyIme()
-        return result
+        if (!super.setComposingText(text, newCursorPosition)) return false
+        // Control actions must wait for commitment: executing them during
+        // composition would clear context and replay them on the matching commit.
+        if (deferComposition()) { notifyIme(); return true }
+        return synchronize()
     }
+    private fun deferComposition() = !retainContext() || buffer.any { it < ' ' || it == '\u007f' }
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         if (!active || !fits(text)) return false
         super.commitText(text, newCursorPosition)
@@ -104,11 +110,12 @@ internal class TerminalInputConnection(
         if (!keep || extraBefore != 0 || extraAfter != 0) discardComposition() else {
             // Trim bookkeeping only, never the remote command. If the cursor
             // is in a long edit, abandon context rather than retain it unbounded.
-            if (buffer.length > 512 && cursor != buffer.length) {
+            val composing = getComposingSpanStart(buffer) >= 0
+            if (!composing && buffer.length > 512 && cursor != buffer.length) {
                 discardComposition()
                 return true
             }
-            if (buffer.length > 512) {
+            if (!composing && buffer.length > 512) {
                 var cut = buffer.length - 512
                 if (Character.isLowSurrogate(buffer[cut])) cut++
                 buffer.delete(0, cut)
@@ -145,7 +152,7 @@ internal class TerminalInputConnection(
         val protectedPoints = Character.codePointCount(buffer, a, b)
         val result = super.deleteSurroundingText(a - start, end - b)
         if (!result) return false
-        if (composing && extraBefore == 0 && extraAfter == 0) { notifyIme(); return true }
+        if (composing && deferComposition() && extraBefore == 0 && extraAfter == 0) { notifyIme(); return true }
         if (extraBefore != 0 || extraAfter != 0) {
             super.finishComposingText()
             Selection.setSelection(buffer, start + b - a)

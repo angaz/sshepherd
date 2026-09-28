@@ -55,17 +55,20 @@ class TerminalInputConnectionTest {
         assertEquals(0, info.initialCapsMode)
         assertTrue(info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0)
     }
-    @Test fun swipeCandidatesAndSuggestedReplacementOnlySubmitFinalWordsOnce() {
+    @Test fun swipeCandidatesAppearImmediatelyAndCommitDoesNotDuplicate() {
         input.setComposingText("helo", 1)
+        assertEquals("helo", remote)
         input.setComposingText("hello", 1)
-        assertTrue(text.isEmpty())
+        assertEquals("hello", remote)
+        val count = edits.size
         input.commitText("hello", 1)
         input.finishComposingText()
+        assertEquals(count, edits.size)
         input.commitText(" ", 1)
         input.setComposingText("wrld", 1)
         input.commitText("world", 1)
         input.finishComposingText()
-        assertEquals(listOf("hello", " ", "world"), text)
+        assertEquals("hello world", remote)
         assertTrue(keys.isEmpty())
     }
     @Test fun unicodeCommitAndBackspaceWithoutHardwareEvents() {
@@ -82,26 +85,34 @@ class TerminalInputConnectionTest {
     @Test fun compositionReplacementCommitsOnce() {
         input.setComposingText("に", 1)
         input.setComposingText("日本", 1)
-        assertTrue(text.isEmpty())
+        assertEquals("日本", remote)
+        val count = edits.size
         input.commitText("日本", 1)
         input.finishComposingText()
-        assertEquals(listOf("日本"), text)
+        assertEquals(count, edits.size)
+        assertEquals("日本", remote)
         assertEquals("日本", input.editable.toString())
     }
-    @Test fun finishingCompositionCommitsButDiscardDoesNot() {
+    @Test fun finishingAndDiscardingContextDoNotReplayLiveComposition() {
         input.setComposingText("draft", 1)
         input.finishComposingText()
         input.finishComposingText()
         assertEquals(listOf("draft"), text)
         input.setComposingText("abandoned", 1)
+        val count = edits.size
         input.discardComposition()
         input.finishComposingText()
-        assertEquals(listOf("draft"), text)
+        assertEquals(count, edits.size)
+        assertEquals("draftabandoned", remote)
     }
-    @Test fun composingDeletionNeverSendsRemoteBackspace() {
+    @Test fun composingReplacementDeletionUpdatesRemoteImmediately() {
         input.setComposingText("test", 1)
-        input.deleteSurroundingText(1, 0)
-        assertTrue(keys.isEmpty())
+        input.setComposingText("tes", 1)
+        assertEquals("tes", remote)
+        input.setComposingText("", 1)
+        assertEquals("", remote)
+        input.finishComposingText()
+        assertEquals("", remote)
     }
     @Test fun imeEnterAndKeyEventsAreForwardedOnce() {
         input.performEditorAction(EditorInfo.IME_ACTION_DONE)
@@ -196,7 +207,7 @@ class TerminalInputConnectionTest {
         input.setComposingRegion(16384, 16384)
         assertFalse(input.setComposingText("b".repeat(513), 1))
         assertEquals(16384, input.editable.length)
-        assertEquals("", remote)
+        assertEquals("a".repeat(16384), remote)
     }
     @Test fun correctionNotificationDoesNotDuplicateCommittedReplacement() {
         input.commitText("helo", 1)
@@ -204,6 +215,76 @@ class TerminalInputConnectionTest {
         input.commitText("hello", 1)
         input.commitCorrection(android.view.inputmethod.CorrectionInfo(0, "helo", "hello"))
         assertEquals("hello", remote)
+    }
+    @Test fun composingCandidateAndPeriodReplaceCommittedSwipeWithoutBackspace() {
+        input.commitText("word", 1)
+        input.beginBatchEdit()
+        input.setComposingRegion(0, 4)
+        input.setComposingText("world", 1)
+        input.endBatchEdit()
+        assertEquals("world", remote)
+        input.setComposingText("world.", 1)
+        assertEquals("world.", remote)
+        val count = edits.size
+        input.finishComposingText()
+        assertEquals(count, edits.size)
+    }
+    @Test fun composingPeriodAfterCommittedWordAppearsImmediately() {
+        input.commitText("word", 1)
+        input.setComposingText(".", 1)
+        assertEquals("word.", remote)
+        input.commitText(".", 1)
+        assertEquals("word.", remote)
+    }
+    @Test fun longCompositionIsNotTrimmedBeforeCandidateReplacement() {
+        input.setComposingText("a".repeat(600), 1)
+        input.setComposingText("word", 1)
+        assertEquals("word", remote)
+        input.finishComposingText()
+        assertEquals("word", remote)
+    }
+    @Test fun controlLatchDefersCandidatesUntilCommit() {
+        val submitted = mutableListOf<TerminalEdit>()
+        val control = TerminalInputConnection(View(RuntimeEnvironment.getApplication()),
+            { submitted.add(it); true }, { true }, { false })
+        control.setComposingText("x", 1)
+        control.setComposingText("c", 1)
+        assertTrue(submitted.isEmpty())
+        control.commitText("c", 1)
+        control.finishComposingText()
+        assertEquals(listOf("c"), submitted.map { it.text })
+    }
+    @Test fun rejectedComposingUpdateIsNotReplayedOnFinish() {
+        input.setComposingText("word", 1)
+        accept = false
+        assertFalse(input.setComposingText("world", 1))
+        accept = true
+        input.finishComposingText()
+        assertEquals("word", remote)
+        assertEquals("", input.editable.toString())
+    }
+    @Test fun controlContainingCompositionIsOnlySubmittedOnceOnCommit() {
+        for (control in listOf('\n', '\r', '\t', '\u001b', '\u007f')) {
+            setup()
+            remote = ""; position = 0
+            val candidate = "echo hi$control"
+            val count = edits.size
+            input.setComposingText(candidate, 1)
+            assertEquals(count, edits.size)
+            input.commitText(candidate, 1)
+            input.finishComposingText()
+            assertEquals(count + 1, edits.size)
+            assertEquals(candidate, remote)
+        }
+    }
+    @Test fun addingNewlineToLiveCandidateWaitsUntilCommit() {
+        input.setComposingText("echo hi", 1)
+        input.setComposingText("echo hi\n", 1)
+        assertEquals("echo hi", remote)
+        input.commitText("echo hi\n", 1)
+        input.finishComposingText()
+        assertEquals("echo hi\n", remote)
+        assertEquals(listOf("echo hi", "\n"), text)
     }
     @Test fun invalidInputIsBounded() {
         assertFalse(input.deleteSurroundingText(1000000, 0))

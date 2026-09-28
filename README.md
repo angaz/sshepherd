@@ -26,7 +26,7 @@ Returning to Servers detaches the phone's Herdr frontend, not the persistent ser
 | Terminal drawing | Custom native `TerminalView`, Android Canvas/Paint and system font fallback |
 | Terminal engine | Native **libghostty-vt**, written in Zig, statically linked into an Android `.so` |
 | Terminal binding | Small C++ JNI wrapper; copies bounded cell/grapheme snapshots to Kotlin |
-| Keyboard | Real Android `InputConnection`; local composition until commit; Ghostty hardware-key encoding |
+| Keyboard | Real Android `InputConnection`; live composing-text/candidate replacement; Ghostty hardware-key encoding |
 | Mouse | Android `MotionEvent` → Ghostty's native mouse encoder |
 | Transport | Rust, Tokio, Quinn, rustls, Serde/postcard, JNI |
 | Credentials | Android Keystore, AES-GCM, backup/device-transfer exclusions |

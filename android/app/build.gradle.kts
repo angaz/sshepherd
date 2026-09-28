@@ -10,8 +10,8 @@ android {
         applicationId = "io.angaz.sshepherd"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.2-native"
+        versionCode = 5
+        versionName = "0.2.3-native"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
     compileOptions {
