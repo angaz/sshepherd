@@ -15,6 +15,15 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class MainActivityTest {
     private fun children(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { children(view.getChildAt(it)) } else emptyList()
+    @Test fun suppliedAdaptiveLauncherIconsLoad() {
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
+        assertTrue(app.applicationInfo.icon in listOf(R.mipmap.ic_launcher, R.mipmap.ic_launcher_round))
+        for (id in listOf(R.mipmap.ic_launcher, R.mipmap.ic_launcher_round)) {
+            val adaptive = app.getDrawable(id) as android.graphics.drawable.AdaptiveIconDrawable
+            assertNotNull(adaptive.background)
+            assertNotNull(adaptive.foreground)
+        }
+    }
     @Test fun screenshotsAndAppPreviewsAreNotBlocked() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         assertEquals(0, controller.get().window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE)

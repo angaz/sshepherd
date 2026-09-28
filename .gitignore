@@ -11,3 +11,5 @@ __pycache__/
 .env
 core
 core.*
+# Original supplied archive; extracted launcher resources are tracked.
+/sshepherd-android-icons.zip
