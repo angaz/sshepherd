@@ -1,0 +1,14 @@
+SSHepherd uses:
+
+- Native libghostty-vt (Zig), MIT license, from the source bundled in
+  herdrdev/herdr revision 14351f121f6fc8c84b7c6c6eda78ad210e93cfcb.
+  Upstream: https://github.com/ghostty-org/ghostty
+  Pinned source and checksum: scripts/prepare-ghostty.sh
+  License included in APK assets/licenses/libghostty-vt.txt.
+- Herdr Eternal protocol source from Mic92/herdr-eternal revision
+  28342f2854ce916724771072c51b432a4a3ec24a, MIT license.
+  Source/license: native/vendor/eternal-proto/.
+- Kotlin, Rust dependencies, Android platform and Gradle wrapper under
+  their respective licenses. Robolectric and JUnit are test-only dependencies.
+
+No Herdr binary, web rendering engine, or remote credentials are distributed.
