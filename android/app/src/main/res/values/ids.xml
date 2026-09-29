@@ -1,0 +1,4 @@
+<resources>
+    <item name="host_name" type="id" />
+    <item name="host_address" type="id" />
+</resources>

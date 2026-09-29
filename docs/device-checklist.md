@@ -15,6 +15,8 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Use Attach with a UTF-8 text file and verify contents paste after confirmation, not a path. Cancel without sending anything.
 - [ ] Paste an image via clipboard URI, keyboard image insertion and Attach; verify Herdr's remote image path reaches the intended pane and the agent can read it. Confirm ≤16 MiB/image and 64 MiB/session handling.
 - [ ] Disconnect or leave the app while a content provider is reading; verify grants/streams are released and no stale upload reaches another session. Verify the 15-second provider timeout.
+- [ ] Add/edit/delete a host using a friendly name and hostname or private IP; restart the app and verify persistence. Confirm compact cards show the address on the right and Workspaces stays visible at the top.
+- [ ] Test a cold network/DNS start: first resolution timeout should retry automatically, while invalid/public destinations must fail without sending credentials.
 - [ ] Verify Material cards/settings/dialogs and the compact terminal top bar. Expand/collapse extra keys; verify bottom-right keyboard icon and all keys in portrait/landscape, with IME open and larger font settings. Check TalkBack labels and hardware focus navigation.
 - [ ] Swipe Gboard's space bar left/right through phone-typed text; type at the new position and confirm correction/backspace still work. Terminal history outside retained text is not available to IME selection gestures.
 - [ ] Switch tabs/workspaces and zoom with ctrl+a-based controls; pending composition commits before navigation.

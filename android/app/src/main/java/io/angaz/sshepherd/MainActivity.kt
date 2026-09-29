@@ -31,16 +31,17 @@ import java.util.ArrayDeque
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var tokens: TokenStore
+    private lateinit var hostStore: HostStore
     private val handler = Handler(Looper.getMainLooper())
     private var terminal: TerminalView? = null
     private var notice: TextView? = null
     private var controls: TerminalControls? = null
     private var session = 0L
-    private var activeHost: String? = null
+    private var activeHost: HostEntry? = null
     private var phase = "idle"
     private var destroyed = false
     private var away = false
-    private val hosts = listOf("host-a", "host-b", "host-c", "host-d", "host-e", "host-f")
+    private var hosts = emptyList<HostEntry>()
     private val failures = mutableSetOf<String>()
     private val outbound = ArrayDeque<ByteArray>()
     private var queuedBytes = 0
@@ -65,6 +66,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         if (android.os.Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         tokens = TokenStore(this)
+        hostStore = HostStore(this)
         root = FrameLayout(this).apply { setBackgroundColor(backgroundColor) }
         setContentView(root)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -105,56 +107,119 @@ class MainActivity : AppCompatActivity() {
         terminal = null
         controls = null
         root.removeAllViews()
+        hosts = hostStore.read()
         val content = column()
         content.addView(appBar("SSHepherd", "Your terminals").apply {
-            menu.add("Connection settings").setIcon(R.drawable.ic_settings).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-            setOnMenuItemClickListener { showSettings(); true }
+            menu.add(0, 1, 0, "Add host").setIcon(R.drawable.ic_add).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            menu.add(0, 2, 1, "Connection settings").setIcon(R.drawable.ic_settings).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            setOnMenuItemClickListener { if (it.itemId == 1) showHostEditor() else showSettings(); true }
         }, LinearLayout.LayoutParams(-1, dp(64)))
         content.addView(label("Servers", 22f))
         content.addView(label("Choose a server to connect.", 14f))
         val inventory = column().apply { setPadding(dp(12), dp(4), dp(12), dp(8)) }
         for (host in hosts) {
-            val status = if (host in failures) "Connection failed · tap to retry" else "Tap to connect"
-            val details = column().apply { setPadding(dp(4), dp(4), dp(4), dp(4)) }
-            details.addView(label(host, 19f).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
-            details.addView(label("${host}.example.invalid", 13f).apply { setPadding(dp(16), 0, dp(16), dp(2)); setTextColor(0xffb5c5cd.toInt()) })
-            details.addView(label(status, 13f).apply { setTextColor(if (host in failures) 0xffff9d93.toInt() else 0xff7ce4c6.toInt()) })
+            val failed = host.id in failures
+            val details = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL
+                minimumHeight = dp(64); setPadding(dp(12), dp(4), dp(4), dp(4))
+            }
+            details.addView(label(host.name, 16f).apply {
+                setPadding(0, 0, dp(8), 0); setTypeface(typeface, android.graphics.Typeface.BOLD)
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                if (failed) setTextColor(0xffff9d93.toInt())
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            details.addView(label(host.address, 12f).apply {
+                setPadding(0, 0, dp(8), 0); setTextColor(0xffb5c5cd.toInt())
+                gravity = android.view.Gravity.END; maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, -2, 1.25f))
+            details.addView(button("") { showHostEditor(host) }.apply {
+                setIconResource(R.drawable.ic_edit); iconSize = dp(20); iconPadding = 0
+                iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+                contentDescription = "Edit ${host.name}"; tooltipText = contentDescription
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
             val card = MaterialCardView(this).apply {
-                radius = dp(18).toFloat(); cardElevation = 0f
+                radius = dp(14).toFloat(); cardElevation = 0f
                 setCardBackgroundColor(0xff1b252e.toInt())
                 strokeWidth = dp(1); setStrokeColor(0xff30414a.toInt())
                 isClickable = true; isFocusable = true
-                contentDescription = "$host. $status"
+                contentDescription = "${host.name}. ${host.address}${if (failed) ". Last connection failed" else ""}"
                 setOnClickListener { connectTo(host) }
                 addView(details)
             }
-            inventory.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+            inventory.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         }
         content.addView(ScrollView(this).apply { addView(inventory) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        notice = label("All configured machines are listed, including offline servers.", 13f)
+        if (hosts.isEmpty()) inventory.addView(label("No hosts yet. Use + to add one.", 15f))
+        notice = label("Hosts stay listed even when offline. Use the pencil to edit.", 13f)
         content.addView(notice)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
     }
-    private fun showTerminal(host: String) {
+    private fun showHostEditor(existing: HostEntry? = null) {
+        val layout = column().apply { setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        fun field(title: String, value: String, id: Int): Pair<TextInputLayout, TextInputEditText> {
+            val box = TextInputLayout(this).apply { hint = title; boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE }
+            val input = TextInputEditText(box.context).apply {
+                this.id = id; setSingleLine(true); setText(value)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            }
+            box.addView(input)
+            layout.addView(box, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+            return box to input
+        }
+        val (nameBox, name) = field("Name", existing?.name.orEmpty(), R.id.host_name)
+        val (addressBox, address) = field("Hostname or IP address", existing?.address.orEmpty(), R.id.host_address)
+        addressBox.helperText = "private addresses only · UDP 7443"
+        layout.addView(label("These hosts receive your shared Eternal token. Use only trusted private addresses; TLS identity is not verified.", 13f))
+        val builder = MaterialAlertDialogBuilder(this).setTitle(if (existing == null) "Add host" else "Edit host")
+            .setView(ScrollView(this).apply { addView(layout) })
+            .setNegativeButton("Cancel", null).setPositiveButton("Save", null)
+        if (existing != null) builder.setNeutralButton("Delete") { _, _ ->
+            MaterialAlertDialogBuilder(this).setTitle("Delete ${existing.name}?")
+                .setMessage("This removes it from this phone only. The remote machine is unchanged.")
+                .setNegativeButton("Cancel", null).setPositiveButton("Delete") { _, _ ->
+                    try {
+                        hostStore.save(hosts.filterNot { it.id == existing.id })
+                        failures.remove(existing.id); showServers()
+                    } catch (_: Exception) { setNotice("Could not save hosts", true) }
+                }.show()
+        }
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                nameBox.error = null; addressBox.error = null
+                try {
+                    val entry = HostStore.entry(name.text.toString(), address.text.toString(), existing?.id ?: java.util.UUID.randomUUID().toString())
+                    val updated = if (existing == null) hosts + entry else hosts.map { if (it.id == existing.id) entry else it }
+                    hostStore.save(updated)
+                    failures.remove(entry.id)
+                    dialog.dismiss(); showServers()
+                } catch (error: Exception) {
+                    addressBox.error = error.message ?: "Enter a valid name and hostname/IP"
+                }
+            }
+        }
+        dialog.show()
+    }
+    private fun showTerminal(host: HostEntry) {
         root.removeAllViews()
         val content = column()
         val view = TerminalView(this)
         terminal = view
         activeHost = host
-        content.addView(appBar(host, "Herdr").apply {
+        content.addView(appBar(host.name, host.address).apply {
             setNavigationIcon(R.drawable.ic_back)
             navigationContentDescription = "Servers"
             setNavigationOnClickListener { showServers() }
             menu.add(0, 1, 0, "Previous tab").setIcon(R.drawable.ic_previous).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
             menu.add(0, 2, 1, "Next tab").setIcon(R.drawable.ic_next).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-            menu.add(0, 3, 2, "Workspaces")
+            menu.add(0, 3, 2, "Workspaces").setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS or android.view.MenuItem.SHOW_AS_ACTION_WITH_TEXT)
             menu.add(0, 4, 3, "Zoom pane")
             setOnMenuItemClickListener {
                 when (it.itemId) { 1 -> view.herdrAction('p'); 2 -> view.herdrAction('n'); 3 -> view.herdrAction('w'); 4 -> view.herdrAction('z') }
                 true
             }
         }, LinearLayout.LayoutParams(-1, dp(56)))
-        notice = label("Connecting to $host…", 12f).apply {
+        notice = label("Connecting to ${host.name}…", 12f).apply {
             setPadding(dp(16), dp(5), dp(16), dp(5))
             setBackgroundColor(0xff182029.toInt())
         }
@@ -294,7 +359,7 @@ class MainActivity : AppCompatActivity() {
                 dialog.show()
             }
     }
-    private fun connectTo(host: String) {
+    private fun connectTo(host: HostEntry) {
         if (destroyed || host !in hosts) return
         disconnect()
         val token = try { tokens.read() } catch (_: Exception) { tokens.clear(); null }
@@ -302,12 +367,12 @@ class MainActivity : AppCompatActivity() {
         try {
             showTerminal(host)
             phase = "connecting"
-            val id = Native.open(host, token)
+            val id = Native.open(host.address, token)
             check(id != 0L) { "Could not start transport" }
             session = id
             poll(id)
         } catch (error: Exception) {
-            failures.add(host); disconnect(); setNotice(error.message ?: "Connection failed", true)
+            failures.add(host.id); disconnect(); setNotice(error.message ?: "Connection failed", true)
         } catch (_: LinkageError) {
             disconnect(); setNotice("Native library unavailable for this device", true)
         }
@@ -363,8 +428,8 @@ class MainActivity : AppCompatActivity() {
                     phase = event.getString("phase")
                     terminal?.acceptingInput = phase == "connected" && imageTransfer == null
                     setNotice(event.getString("message"), phase == "error")
-                    if (phase == "connected") { activeHost?.let { failures.remove(it) }; resizePending = true }
-                    if (phase == "error") activeHost?.let { failures.add(it) }
+                    if (phase == "connected") { activeHost?.let { failures.remove(it.id) }; resizePending = true }
+                    if (phase == "error") activeHost?.let { failures.add(it.id) }
                 }
             }
             flushInput() // retries the latest resize even if no new geometry event arrives

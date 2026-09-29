@@ -11,7 +11,42 @@ use rustls::{
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-pub const HOSTS: &[&str] = &["host-a", "host-b", "host-c", "host-d", "host-e", "host-f"];
+/// User-supplied endpoint syntax only; resolved addresses are separately restricted.
+pub fn valid_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 { return false; }
+    if host.parse::<std::net::IpAddr>().is_ok() { return true; }
+    if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') { return false; }
+    host.split('.').all(|label| {
+        !label.is_empty() && label.len() <= 63 &&
+        label.as_bytes()[0].is_ascii_alphanumeric() && label.as_bytes()[label.len()-1].is_ascii_alphanumeric() &&
+        label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+fn trusted_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V6(ip) => (ip.segments()[0] & 0xfe00) == 0xfc00,
+        std::net::IpAddr::V4(ip) => ip.is_private() || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])),
+    }
+}
+
+async fn resolve_with_retry<F, Fut>(events: &mpsc::Sender<Event>, mut lookup: F,
+    timeout: Duration, delay: Duration) -> Result<SocketAddr>
+where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<Vec<SocketAddr>>> {
+    for attempt in 1..=3 {
+        status(events, "connecting", format!("Resolving address ({attempt}/3)…")).await;
+        let failure = match tokio::time::timeout(timeout, lookup()).await {
+            Ok(Ok(addresses)) => return addresses.into_iter().filter(|address| trusted_address(address.ip())).min_by_key(|address| !address.is_ipv6())
+                .context("No private address. Public, loopback and link-local addresses are not allowed."),
+            Ok(Err(error)) => format!("DNS lookup failed: {error}"),
+            Err(_) => "DNS timed out".to_owned(),
+        };
+        if attempt == 3 { bail!("{failure} after 3 attempts; check connectivity and DNS."); }
+        status(events, "connecting", format!("{failure}; retrying automatically ({}/3)…", attempt + 1)).await;
+        tokio::time::sleep(delay * attempt).await;
+    }
+    unreachable!()
+}
 const REPLAY_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Serialize)]
@@ -36,7 +71,7 @@ async fn status(events: &mpsc::Sender<Event>, phase: &'static str, message: impl
 }
 
 // Certificate verification is disabled only with explicit user consent.
-// for the fixed network inventory, after explicit consent in the Android UI.
+// for user-configured private/mesh endpoints, after explicit consent in the UI.
 // Authenticate server identity independently; the self-signed TLS cert does not.
 #[derive(Debug)]
 struct ConsentedServerIdentity;
@@ -162,17 +197,20 @@ pub async fn run(
     events: mpsc::Sender<Event>,
 ) {
     let result = async {
-        if !HOSTS.contains(&host.as_str()) { bail!("Unknown server"); }
+        if !valid_host(&host) { bail!("Invalid hostname or IP address"); }
         if token.trim().is_empty() || token.len() > 8192 { bail!("Set a valid token in Settings"); }
-        let name = format!("{host}.example.invalid");
-        status(&events, "connecting", "Resolving server address…").await;
-        // These servers listen on ULA IPv6 only. Do not leak the bearer token
-        // to a public address due to a mistaken DNS resolver/search domain.
-        let addr = tokio::time::timeout(Duration::from_secs(8), tokio::net::lookup_host((name.as_str(), 7443)))
-            .await.context("DNS timed out; check connectivity")??
-            .find(|addr| matches!(addr.ip(), std::net::IpAddr::V6(ip) if (ip.segments()[0] & 0xfe00) == 0xfc00))
-            .context("No allowed ULA IPv6 address; check VPN and mesh DNS")?;
-        session(addr, &name, &token, input, &events).await
+        // Keep bearer tokens off public networks even with an editable inventory.
+        // Literal IPs do not perform DNS. No user input enters the exec command.
+        let addr = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if !trusted_address(ip) { bail!("Use a trusted private IP address, not a public or loopback address"); }
+            SocketAddr::new(ip, 7443)
+        } else {
+            resolve_with_retry(&events, || async {
+                Ok(tokio::net::lookup_host((host.as_str(), 7443)).await?.collect())
+            }, Duration::from_secs(8), Duration::from_secs(1)).await?
+        };
+        if input.is_closed() { return Ok(()); }
+        session(addr, &host, &token, input, &events).await
     }.await;
     if let Err(error) = result {
         status(&events, "error", format!("{error:#}")).await;
@@ -329,8 +367,52 @@ mod tests {
         assert!(!command.contains("mesh.example.invalid"));
     }
     #[test]
-    fn inventory_matches_nix() {
-        assert_eq!(HOSTS.len(), 6);
-        assert!(HOSTS.contains(&"host-a"));
+    fn editable_hosts_accept_names_and_literal_ips_but_not_urls_or_commands() {
+        for host in ["host-b.example.invalid", "my-server", "192.0.2.9", "2001:db8::12"] { assert!(valid_host(host), "{host}"); }
+        for host in ["", "bad name", "host:7443", "https://host", "host/path", "host;ls", "-host", "a..b", "999.1.2.3", "127.1"] { assert!(!valid_host(host), "{host}"); }
+    }
+    #[test]
+    fn bearer_token_destinations_remain_private_or_mesh() {
+        for ip in ["10.0.0.1", "172.16.1.1", "192.168.0.2", "100.64.0.1", "100.127.255.254", "fd00::1"] {
+            assert!(trusted_address(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["8.8.8.8", "127.0.0.1", "169.254.169.254", "100.128.0.1", "::1", "fe80::1", "2606:4700::1111"] {
+            assert!(!trusted_address(ip.parse().unwrap()), "{ip}");
+        }
+    }
+    #[tokio::test]
+    async fn dns_timeout_retries_then_prefers_mesh_ipv6() {
+        let (events, _rx) = mpsc::channel(16);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let result = resolve_with_retry(&events, || {
+            let attempt = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if attempt == 0 { tokio::time::sleep(Duration::from_secs(1)).await; }
+                Ok(vec!["192.168.0.1:7443".parse().unwrap(), "[fd00::1]:7443".parse().unwrap()])
+            }
+        }, Duration::from_millis(5), Duration::ZERO).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(result, "[fd00::1]:7443".parse().unwrap());
+    }
+    #[tokio::test]
+    async fn dns_failures_are_bounded_to_three_attempts() {
+        let (events, _rx) = mpsc::channel(16);
+        let calls = std::cell::Cell::new(0);
+        let error = resolve_with_retry(&events, || {
+            calls.set(calls.get() + 1);
+            async { Err(anyhow!("test DNS failure")) }
+        }, Duration::from_millis(5), Duration::ZERO).await.unwrap_err();
+        assert_eq!(calls.get(), 3);
+        assert!(error.to_string().contains("after 3 attempts"));
+    }
+    #[tokio::test]
+    async fn public_dns_answers_are_rejected_without_retrying_or_connecting() {
+        let (events, _rx) = mpsc::channel(16);
+        let calls = std::cell::Cell::new(0);
+        assert!(resolve_with_retry(&events, || {
+            calls.set(calls.get() + 1);
+            async { Ok(vec!["8.8.8.8:7443".parse().unwrap()]) }
+        }, Duration::from_millis(5), Duration::ZERO).await.is_err());
+        assert_eq!(calls.get(), 1);
     }
 }

@@ -209,11 +209,11 @@ async fn explicit_close_drains_active_output_and_sends_eof_without_resume() {
 }
 
 #[tokio::test]
-async fn unknown_host_is_rejected_before_dns_or_network() {
+async fn malformed_host_is_rejected_before_dns_or_network() {
     let (_input, rx) = mpsc::channel(1);
     let (events, mut output) = mpsc::channel(4);
     run(
-        "attacker.example".into(),
+        "https://attacker.example".into(),
         "fixture-token".into(),
         rx,
         events,

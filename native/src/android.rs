@@ -41,7 +41,7 @@ pub extern "system" fn Java_io_angaz_sshepherd_Native_open(
     let Ok(token) = env.get_string(&token).map(String::from) else {
         return 0;
     };
-    if !transport::HOSTS.contains(&host.as_str()) || token.is_empty() || token.len() > 8192 {
+    if !transport::valid_host(&host) || token.is_empty() || token.len() > 8192 {
         return 0;
     }
     let Ok(mut sessions) = sessions().lock() else {
