@@ -43,6 +43,7 @@ internal class TerminalInputConnection(
     private var cursor = 0
     private var batch = 0
     private var active = true
+    private val imeArrowKeys = mutableSetOf<Int>()
     init { Selection.setSelection(buffer, 0) }
     override fun getEditable(): Editable = buffer
     private fun notifyIme() {
@@ -58,6 +59,17 @@ internal class TerminalInputConnection(
     override fun endBatchEdit(): Boolean { if (batch > 0) batch--; notifyIme(); return true }
     override fun setSelection(start: Int, end: Int): Boolean {
         if (!active || start !in 0..buffer.length || end !in 0..buffer.length) return false
+        // Space-bar gestures use selection offsets, not necessarily key events.
+        // Only mirror our owned, already-sent text; never guess screen contents.
+        fun boundary(offset: Int) = offset == 0 || offset == buffer.length ||
+            !(Character.isHighSurrogate(buffer[offset - 1]) && Character.isLowSurrogate(buffer[offset]))
+        if (!boundary(start) || !boundary(end)) return false
+        if (retainContext() && sent == buffer.toString() && cursor != end) {
+            val right = if (end > cursor) sent.codePointCount(cursor, end) else 0
+            val left = if (end < cursor) sent.codePointCount(end, cursor) else 0
+            if (!applyEdit(TerminalEdit(right, 0, "", left))) { notifyIme(); return false }
+            cursor = end
+        }
         val result = super.setSelection(start, end)
         notifyIme()
         return result
@@ -185,6 +197,19 @@ internal class TerminalInputConnection(
     }
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (!active) return false
+        if (event.action == KeyEvent.ACTION_UP && imeArrowKeys.remove(event.keyCode)) return true
+        // Some IMEs implement cursor gestures as synthetic arrow keys instead.
+        if (event.action == KeyEvent.ACTION_DOWN && event.hasNoModifiers() && retainContext() &&
+            event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT) &&
+            sent.isNotEmpty() && sent == buffer.toString()) {
+            val backwards = event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+            if ((backwards && cursor > 0) || (!backwards && cursor < sent.length)) {
+                val next = sent.offsetByCodePoints(cursor, if (backwards) -1 else 1)
+                imeArrowKeys.add(event.keyCode)
+                return setSelection(next, next)
+            }
+            // Outside the known context, preserve normal terminal arrow behavior.
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             if (!finishComposingText()) return false
             discardComposition()
@@ -203,7 +228,7 @@ internal class TerminalInputConnection(
     }
     fun discardComposition() {
         buffer.clear(); removeComposingSpans(buffer); Selection.setSelection(buffer, 0)
-        sent = ""; cursor = 0; notifyIme()
+        sent = ""; cursor = 0; imeArrowKeys.clear(); notifyIme()
     }
     override fun closeConnection() { discardComposition(); active = false; super.closeConnection() }
 }

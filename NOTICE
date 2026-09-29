@@ -8,6 +8,10 @@ SSHepherd uses:
 - Herdr Eternal protocol source from Mic92/herdr-eternal revision
   28342f2854ce916724771072c51b432a4a3ec24a, MIT license.
   Source/license: native/vendor/eternal-proto/.
+- Material Components for Android and AndroidX, Apache License 2.0.
+  Upstream: https://github.com/material-components/material-components-android
+  and https://android.googlesource.com/platform/frameworks/support
+  License: licenses/Apache-2.0.txt; included in APK assets/licenses/.
 - Kotlin, Rust dependencies, Android platform and Gradle wrapper under
   their respective licenses. Robolectric and JUnit are test-only dependencies.
 

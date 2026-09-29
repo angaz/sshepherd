@@ -1,6 +1,6 @@
 # SSHepherd — native Android
 
-A **native Android** client for your Herdr terminals over QUIC. Kotlin Android Views, an Android Canvas terminal renderer and the **native libghostty-vt** engine. **No WebView, HTML/JavaScript UI, WASM, Flutter or browser runtime.**
+A **native Android** client for your Herdr terminals over QUIC. Kotlin Android Views with Material 3 components, an Android Canvas terminal renderer and the **native libghostty-vt** engine. **No WebView, HTML/JavaScript UI, WASM, Flutter or browser runtime.**
 
 ## Install
 
@@ -14,7 +14,7 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 2. Open **Connection settings** and paste the shared token from a trusted server. It is encrypted using Android Keystore. No token is bundled or read from your machine during development.
 3. Confirm the server trust notice, then tap a server. The sample server inventory includes offline entries.
 4. Herdr opens its existing `default` session. **Prev tab / Next tab / Workspaces / Zoom** send the `Ctrl+A` prefix; configure matching server bindings. Taps/drags send mouse events to Herdr and its TUIs.
-5. **Keyboard** opens the normal Android IME with suggestions/autocorrection and swipe typing permitted. Automatic capitalization stays off, and the app requests no personalized learning from terminal input. The horizontally scrollable accessory row provides Ctrl, Ctrl+C/D, Esc, Tab, Enter, arrows, Home/End, PgUp/PgDn, Prefix and confirmed Paste. Physical keyboards use Ghostty's key encoder, including terminal/application cursor modes and layout-generated AltGr text.
+5. **Keyboard** opens the normal Android IME with suggestions/autocorrection and swipe typing permitted. Automatic capitalization stays off, and the app requests no personalized learning from terminal input. The bottom bar keeps Esc, Tab and Ctrl+C visible. Its expand icon reveals a grid with Ctrl, Enter, arrows, Backspace/Delete, Home/End, PgUp/PgDn, Ctrl+D, Prefix, Paste and Attach; the keyboard icon stays at the bottom right. On very short windows the expanded grid can scroll vertically, never sideways. Tab arrows are in the top app bar; Workspaces and Zoom are in its overflow menu. Gboard-style space-bar cursor gestures move the remote caret within the app's retained phone-typed text (not arbitrary terminal history). Physical keyboards use Ghostty's key encoder, including terminal/application cursor modes and layout-generated AltGr text.
 
 **Images and text files:** use **Attach** to choose a file, **Paste** for a clipboard file/image, or the keyboard's image-insertion action. PNG/JPEG/GIF/WebP/BMP images (up to 16 MiB) are transferred through Herdr's native image-paste mechanism; Herdr saves a remote temporary file and pastes its path into the current pane. UTF-8 text files (up to 60 KB) paste their contents after confirmation, not a filename. Unsupported binary/control-containing files are rejected. Input pauses during image transfer; the status indicates queuing, not a server acknowledgement. Upload staging is capped at 64 MiB per connection; reconnect to reset it.
 
@@ -24,7 +24,7 @@ Returning to Servers detaches the phone's Herdr frontend, not the persistent ser
 
 | Layer | Technology |
 | --- | --- |
-| App UI and lifecycle | Kotlin, standard Android Activity and Views |
+| App UI and lifecycle | Kotlin, AppCompatActivity, Material 3 toolbar/cards/buttons/dialogs and native Views |
 | Terminal drawing | Custom native `TerminalView`, Android Canvas/Paint and system font fallback |
 | Terminal engine | Native **libghostty-vt**, written in Zig, statically linked into an Android `.so` |
 | Terminal binding | Small C++ JNI wrapper; copies bounded cell/grapheme snapshots to Kotlin |

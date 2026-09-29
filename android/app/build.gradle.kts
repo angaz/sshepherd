@@ -10,8 +10,8 @@ android {
         applicationId = "io.angaz.sshepherd"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.7-native"
+        versionCode = 10
+        versionName = "0.3.0-native"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
     compileOptions {
@@ -23,8 +23,9 @@ android {
     packaging { jniLibs.useLegacyPackaging = false }
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
-// Production uses only the Android platform, Kotlin, and our two native libraries.
+// Native Android Views + Material Components; no web runtime.
 dependencies {
+    implementation("com.google.android.material:material:1.12.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
 }

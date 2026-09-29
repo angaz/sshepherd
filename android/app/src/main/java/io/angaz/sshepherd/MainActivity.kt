@@ -1,9 +1,15 @@
 package io.angaz.sshepherd
 
-import android.app.Activity
-import android.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.checkbox.MaterialCheckBox
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputLayout
+import com.google.android.material.textfield.TextInputEditText
 import android.content.ClipboardManager
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,11 +19,7 @@ import android.util.Base64
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -26,12 +28,13 @@ import org.json.JSONObject
 import java.util.ArrayDeque
 
 /** Entire UI is Android Views. No browser, JavaScript runtime or web assets. */
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var tokens: TokenStore
     private val handler = Handler(Looper.getMainLooper())
     private var terminal: TerminalView? = null
     private var notice: TextView? = null
+    private var controls: TerminalControls? = null
     private var session = 0L
     private var activeHost: String? = null
     private var phase = "idle"
@@ -72,39 +75,60 @@ class MainActivity : Activity() {
                 insets
             }
         }
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
-                if (activeHost != null) showServers() else finish()
-            }
-        }
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() { navigateBack() }
+        })
         showServers()
     }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun label(value: String, size: Float = 16f) = TextView(this).apply {
         text = value; textSize = size; setTextColor(0xffe6edf3.toInt()); setPadding(dp(16), dp(10), dp(16), dp(10))
     }
-    private fun button(value: String, action: () -> Unit) = Button(this).apply {
-        text = value; isAllCaps = false; minHeight = dp(48); setTextColor(0xffe6edf3.toInt())
+    private fun button(value: String, action: () -> Unit) = MaterialButton(this).apply {
+        text = value; isAllCaps = false; minHeight = dp(48)
+        isFocusable = true; isFocusableInTouchMode = false
         setOnClickListener { action() }
     }
-    private fun toolbar(parent: LinearLayout, buttons: List<Button>) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.forEach { row.addView(it) }
-        parent.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
+    private fun appBar(titleText: String, subtitleText: String) = MaterialToolbar(this).apply {
+        title = titleText; subtitle = subtitleText
+        setBackgroundColor(backgroundColor)
+        setTitleTextColor(0xffe6edf3.toInt()); setSubtitleTextColor(0xffb5c5cd.toInt())
+    }
+    private fun navigateBack() {
+        if (controls?.expanded == true) controls?.setExpanded(false)
+        else if (activeHost != null) showServers() else finish()
     }
     private fun showServers() {
         disconnect()
         activeHost = null
         terminal?.let { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken, 0); it.close() }
         terminal = null
+        controls = null
         root.removeAllViews()
         val content = column()
-        content.addView(label("SSHepherd", 24f))
-        content.addView(label("Native Ghostty · Herdr Eternal / QUIC", 14f))
-        content.addView(button("Connection settings", ::showSettings))
-        val inventory = column()
+        content.addView(appBar("SSHepherd", "Your terminals").apply {
+            menu.add("Connection settings").setIcon(R.drawable.ic_settings).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            setOnMenuItemClickListener { showSettings(); true }
+        }, LinearLayout.LayoutParams(-1, dp(64)))
+        content.addView(label("Servers", 22f))
+        content.addView(label("Choose a server to connect.", 14f))
+        val inventory = column().apply { setPadding(dp(12), dp(4), dp(12), dp(8)) }
         for (host in hosts) {
-            inventory.addView(button("$host\n${host}.example.invalid · ${if (host in failures) "last connection failed — retry" else "tap to connect"}") { connectTo(host) })
+            val status = if (host in failures) "Connection failed · tap to retry" else "Tap to connect"
+            val details = column().apply { setPadding(dp(4), dp(4), dp(4), dp(4)) }
+            details.addView(label(host, 19f).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+            details.addView(label("${host}.example.invalid", 13f).apply { setPadding(dp(16), 0, dp(16), dp(2)); setTextColor(0xffb5c5cd.toInt()) })
+            details.addView(label(status, 13f).apply { setTextColor(if (host in failures) 0xffff9d93.toInt() else 0xff7ce4c6.toInt()) })
+            val card = MaterialCardView(this).apply {
+                radius = dp(18).toFloat(); cardElevation = 0f
+                setCardBackgroundColor(0xff1b252e.toInt())
+                strokeWidth = dp(1); setStrokeColor(0xff30414a.toInt())
+                isClickable = true; isFocusable = true
+                contentDescription = "$host. $status"
+                setOnClickListener { connectTo(host) }
+                addView(details)
+            }
+            inventory.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         }
         content.addView(ScrollView(this).apply { addView(inventory) }, LinearLayout.LayoutParams(-1, 0, 1f))
         notice = label("All configured machines are listed, including offline servers.", 13f)
@@ -117,28 +141,40 @@ class MainActivity : Activity() {
         val view = TerminalView(this)
         terminal = view
         activeHost = host
-        toolbar(content, listOf(button("‹ Servers", ::showServers), button(host) {}, button("Keyboard", view::showKeyboard)))
-        toolbar(content, listOf(
-            button("Prev tab") { view.herdrAction('p') },
-            button("Next tab") { view.herdrAction('n') },
-            button("Workspaces") { view.herdrAction('w') },
-            button("Zoom") { view.herdrAction('z') }
-        ))
-        notice = label("Connecting to $host…", 13f)
+        content.addView(appBar(host, "Herdr").apply {
+            setNavigationIcon(R.drawable.ic_back)
+            navigationContentDescription = "Servers"
+            setNavigationOnClickListener { showServers() }
+            menu.add(0, 1, 0, "Previous tab").setIcon(R.drawable.ic_previous).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            menu.add(0, 2, 1, "Next tab").setIcon(R.drawable.ic_next).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            menu.add(0, 3, 2, "Workspaces")
+            menu.add(0, 4, 3, "Zoom pane")
+            setOnMenuItemClickListener {
+                when (it.itemId) { 1 -> view.herdrAction('p'); 2 -> view.herdrAction('n'); 3 -> view.herdrAction('w'); 4 -> view.herdrAction('z') }
+                true
+            }
+        }, LinearLayout.LayoutParams(-1, dp(56)))
+        notice = label("Connecting to $host…", 12f).apply {
+            setPadding(dp(16), dp(5), dp(16), dp(5))
+            setBackgroundColor(0xff182029.toInt())
+        }
         content.addView(notice)
         content.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
-        val ctrl = button("Ctrl") { view.ctrlLatched = !view.ctrlLatched }
-        ctrl.setOnClickListener { view.ctrlLatched = !view.ctrlLatched; ctrl.isSelected = view.ctrlLatched; ctrl.setTextColor(if (view.ctrlLatched) 0xff7ce4c6.toInt() else Color.WHITE) }
-        view.onCtrlConsumed = { ctrl.isSelected = false; ctrl.setTextColor(Color.WHITE) }
-        val keys = listOf(
-            "Esc" to KeyEvent.KEYCODE_ESCAPE, "Tab" to KeyEvent.KEYCODE_TAB,
-            "↑" to KeyEvent.KEYCODE_DPAD_UP, "↓" to KeyEvent.KEYCODE_DPAD_DOWN,
-            "←" to KeyEvent.KEYCODE_DPAD_LEFT, "→" to KeyEvent.KEYCODE_DPAD_RIGHT,
-            "Home" to KeyEvent.KEYCODE_MOVE_HOME, "End" to KeyEvent.KEYCODE_MOVE_END,
-            "PgUp" to KeyEvent.KEYCODE_PAGE_UP, "PgDn" to KeyEvent.KEYCODE_PAGE_DOWN
-        )
-        val accessories = mutableListOf(ctrl, button("Ctrl+C") { view.accessory(KeyEvent.KEYCODE_C, 2) }, button("Enter") { view.accessory(KeyEvent.KEYCODE_ENTER) })
-        accessories.addAll(keys.map { (name, code) -> button(name) { view.accessory(code) } })
+        val ctrl = button("Ctrl") {}.apply { isCheckable = true }
+        ctrl.setOnClickListener {
+            view.ctrlLatched = ctrl.isChecked
+            ctrl.contentDescription = if (ctrl.isChecked) "Control modifier on" else "Control modifier off"
+        }
+        view.onCtrlConsumed = { ctrl.isChecked = false; ctrl.contentDescription = "Control modifier off" }
+        fun key(name: String, code: Int, description: String = name) = button(name) { view.accessory(code) }.apply { contentDescription = description }
+        val primary = listOf(key("Esc", KeyEvent.KEYCODE_ESCAPE, "Escape"), key("Tab", KeyEvent.KEYCODE_TAB),
+            button("Ctrl+C") { view.accessory(KeyEvent.KEYCODE_C, 2) })
+        val accessories = mutableListOf(ctrl,
+            key("↑", KeyEvent.KEYCODE_DPAD_UP, "Up arrow"), key("Enter", KeyEvent.KEYCODE_ENTER), key("⌫", KeyEvent.KEYCODE_DEL, "Backspace"),
+            key("←", KeyEvent.KEYCODE_DPAD_LEFT, "Left arrow"), key("↓", KeyEvent.KEYCODE_DPAD_DOWN, "Down arrow"),
+            key("→", KeyEvent.KEYCODE_DPAD_RIGHT, "Right arrow"), key("Del", KeyEvent.KEYCODE_FORWARD_DEL, "Forward delete"),
+            key("Home", KeyEvent.KEYCODE_MOVE_HOME), key("End", KeyEvent.KEYCODE_MOVE_END),
+            key("PgUp", KeyEvent.KEYCODE_PAGE_UP, "Page up"), key("PgDn", KeyEvent.KEYCODE_PAGE_DOWN, "Page down"))
         accessories.add(button("Ctrl+D") { view.accessory(KeyEvent.KEYCODE_D, 2) })
         accessories.add(button("Prefix") { view.accessory(KeyEvent.KEYCODE_A, 2) })
         accessories.add(button("Paste") {
@@ -171,7 +207,8 @@ class MainActivity : Activity() {
                 setNotice("Cannot read the keyboard's image.", true); false
             }
         }
-        toolbar(content, accessories)
+        controls = TerminalControls(this, primary, accessories, view::showKeyboard)
+        content.addView(controls, LinearLayout.LayoutParams(-1, -2))
         view.onInput = ::enqueueInput
         view.onGeometry = { _, _ -> resizePending = true; flushInput() }
         view.onFailure = { message -> disconnect(); setNotice(message, true) }
@@ -235,7 +272,7 @@ class MainActivity : Activity() {
             is PasteContent.Text -> "${content.value.length} characters. Pasted text may execute commands."
             is PasteContent.Image -> "${content.bytes.size / 1024} KB ${content.extension.uppercase()}. Herdr will save the image remotely and paste its path into the current terminal."
         }
-        contentDialog = AlertDialog.Builder(this).setTitle(if (content is PasteContent.Image) "Paste image through Herdr?" else "Paste file/text contents?")
+        contentDialog = MaterialAlertDialogBuilder(this).setTitle(if (content is PasteContent.Image) "Paste image through Herdr?" else "Paste file/text contents?")
             .setMessage(message).setNegativeButton("Cancel", null).setPositiveButton("Paste") { _, _ ->
                 if (session != id || terminal !== view || phase != "connected" || imageTransfer != null) return@setPositiveButton
                 when (content) {
@@ -349,15 +386,20 @@ class MainActivity : Activity() {
         if (destroyed) return
         val layout = column().apply { setPadding(dp(20), dp(8), dp(20), 0) }
         layout.addView(label("Paste the shared token from your trusted server. Android Keystore encrypts it.\n\nQUIC uses self-signed certificates without CA identity verification. Authenticate server identity independently using trusted endpoints and DNS.", 14f))
-        val token = EditText(this).apply {
+        val tokenField = TextInputLayout(this).apply {
             hint = "Token (blank keeps existing)"
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            endIconMode = TextInputLayout.END_ICON_PASSWORD_TOGGLE
+        }
+        val token = TextInputEditText(tokenField.context).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setSingleLine(true); importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
         }
-        layout.addView(token)
-        val consent = CheckBox(this).apply { text = "I trust the configured servers and DNS; TLS identity is not verified"; isChecked = tokens.consented() }
+        tokenField.addView(token)
+        layout.addView(tokenField)
+        val consent = MaterialCheckBox(this).apply { text = "I trust the configured servers and DNS; TLS identity is not verified"; isChecked = tokens.consented() }
         layout.addView(consent)
-        val dialog = AlertDialog.Builder(this).setTitle("Connection settings").setView(layout)
+        val dialog = MaterialAlertDialogBuilder(this).setTitle("Connection settings").setView(ScrollView(this).apply { addView(layout) })
             .setNegativeButton("Cancel", null).setNeutralButton("Forget token") { _, _ -> disconnect(); tokens.clear(); showServers() }
             .setPositiveButton("Save", null).create()
         dialog.setOnShowListener {
@@ -367,7 +409,7 @@ class MainActivity : Activity() {
                     if (!consent.isChecked || value.isEmpty() || value.toByteArray().size > 8192) {
                         Toast.makeText(this, "Enter a token and confirm server trust", Toast.LENGTH_LONG).show()
                     } else {
-                        disconnect(); tokens.save(value); token.text.clear(); dialog.dismiss(); showServers()
+                        disconnect(); tokens.save(value); token.text?.clear(); dialog.dismiss(); showServers()
                         Toast.makeText(this, "Saved. Tap a server to connect.", Toast.LENGTH_SHORT).show()
                     }
                 } catch (_: Exception) { Toast.makeText(this, "Could not save token in Keystore", Toast.LENGTH_LONG).show() }
@@ -377,8 +419,6 @@ class MainActivity : Activity() {
     }
     override fun onStop() { super.onStop(); away = true; handler.postDelayed(disconnectInBackground, 60_000) }
     override fun onStart() { super.onStart(); away = false; handler.removeCallbacks(disconnectInBackground) }
-    @Deprecated("Legacy Android back callback")
-    override fun onBackPressed() { if (activeHost != null) showServers() else super.onBackPressed() }
     override fun onDestroy() {
         destroyed = true; contentReader.shutdownNow(); handler.removeCallbacksAndMessages(null); disconnect(); terminal?.close(); terminal = null
         super.onDestroy()

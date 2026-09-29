@@ -35,11 +35,13 @@ class MainActivityTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         val views = children(activity.window.decorView)
-        val buttons = views.filterIsInstance<Button>().map { it.text.toString() }
+        val cards = views.filterIsInstance<com.google.android.material.card.MaterialCardView>()
         for (host in listOf("host-a", "host-b", "host-c", "host-d", "host-e", "host-f")) {
-            assertTrue("Missing $host", buttons.any { it.startsWith("$host\n") })
+            assertTrue("Missing $host", cards.any { it.contentDescription.toString().startsWith("$host.") })
         }
         assertFalse(views.any { it.javaClass.name.contains("WebView") })
+        assertFalse(views.any { it is android.widget.HorizontalScrollView })
+        assertTrue(views.any { it is com.google.android.material.appbar.MaterialToolbar })
         controller.pause().stop().destroy()
     }
 }

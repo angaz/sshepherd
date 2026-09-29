@@ -318,6 +318,48 @@ class TerminalInputConnectionTest {
         input.closeConnection()
         assertFalse(input.replaceText(0, 0, "late", 1, null))
     }
+    @Test fun spaceBarSelectionMovesRemoteCaretImmediatelyWithoutRewritingText() {
+        input.commitText("hello world", 1)
+        assertTrue(input.setSelection(5, 5))
+        assertEquals(5, position)
+        assertEquals("hello world", remote)
+        assertEquals(TerminalEdit(0, 0, "", 6), edits.last())
+        assertTrue(input.setSelection(8, 8))
+        assertEquals(8, position)
+        assertEquals(TerminalEdit(3, 0, "", 0), edits.last())
+        input.commitText("X", 1)
+        assertEquals("hello woXrld", remote)
+    }
+    @Test fun gestureMovementRetainsCompositionAndCommitDoesNotReplayIt() {
+        input.setComposingText("hello", 1)
+        input.setSelection(2, 2)
+        assertEquals(2, position)
+        val count = edits.size
+        input.finishComposingText()
+        assertEquals(count, edits.size)
+        assertEquals("hello", remote)
+    }
+    @Test fun gestureSelectionHonorsUnicodeBoundariesAndQueueRejection() {
+        input.commitText("a🐑b", 1)
+        assertFalse(input.setSelection(2, 2))
+        assertEquals(4, position)
+        assertTrue(input.setSelection(1, 1))
+        assertEquals(2, edits.last().left)
+        accept = false
+        assertFalse(input.setSelection(4, 4))
+        assertEquals(1, position)
+        assertEquals(1, android.text.Selection.getSelectionEnd(input.editable))
+    }
+    @Test fun imeArrowGestureKeepsEditingContextAndDoesNotSendDuplicateKeys() {
+        input.commitText("word", 1)
+        input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT))
+        input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT))
+        assertEquals(3, position)
+        assertEquals("wor", input.getTextBeforeCursor(100, 0).toString())
+        assertTrue(keys.isEmpty())
+        input.commitText("X", 1)
+        assertEquals("worXd", remote)
+    }
     @Test fun invalidInputIsBounded() {
         assertFalse(input.deleteSurroundingText(1000000, 0))
         assertFalse(input.commitText("a".repeat(16385), 1))
