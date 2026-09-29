@@ -41,6 +41,10 @@ internal object PtyFrames {
         require(bytes.size <= 65536)
         return ByteBuffer.allocate(bytes.size + 5).put(1).putInt(bytes.size).put(bytes).array()
     }
+    fun content(kind: Int, bytes: ByteArray): ByteArray {
+        require(kind in 3..5 && bytes.size <= 65536)
+        return ByteBuffer.allocate(bytes.size + 5).put(kind.toByte()).putInt(bytes.size).put(bytes).array()
+    }
     fun resize(cols: Int, rows: Int): ByteArray = ByteBuffer.allocate(9).put(2).putInt(4)
         .putShort(cols.coerceIn(2, 500).toShort()).putShort(rows.coerceIn(2, 300).toShort()).array()
 }

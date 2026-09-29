@@ -18,6 +18,7 @@ import kotlin.math.max
 /** Native Android Canvas renderer over libghostty-vt's cell/grapheme grid. */
 class TerminalView(context: Context) : View(context), AutoCloseable {
     var onInput: (ByteArray) -> Boolean = { false }
+    var onContent: (android.view.inputmethod.InputContentInfo, Int) -> Boolean = { _, _ -> false }
     var onGeometry: (Int, Int) -> Unit = { _, _ -> }
     var onFailure: (String) -> Unit = {}
     var onMessage: (String) -> Unit = {}
@@ -149,7 +150,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         configureTerminalEditor(outAttrs)
         connection?.closeConnection()
-        return TerminalInputConnection(this, ::applyImeEdit, ::handleKey, { !ctrlLatched }) {
+        return TerminalInputConnection(this, ::applyImeEdit, ::handleKey, { !ctrlLatched }, { info, flags -> onContent(info, flags) }) {
             composition = it; invalidate()
         }.also { connection = it }
     }
@@ -200,6 +201,11 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         if (connection?.finishComposingText() == false) return
         connection?.discardComposition()
         sendRaw(byteArrayOf(1, key.code.toByte()))
+    }
+    fun prepareContent(): Boolean {
+        if (!acceptingInput || connection?.finishComposingText() == false) return false
+        connection?.discardComposition()
+        return true
     }
     fun paste(value: String) = safely {
         if (!acceptingInput) return

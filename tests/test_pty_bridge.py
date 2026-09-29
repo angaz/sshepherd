@@ -33,11 +33,44 @@ class Framing(unittest.TestCase):
         self.assertEqual(buffer, b'')
 
     def test_invalid_frames(self):
-        for data in (struct.pack('>BI', 1, 65537), frame(4, b''), frame(2, b'x')):
+        for data in (struct.pack('>BI', 1, 65537), frame(9, b''), frame(2, b'x')):
             with self.assertRaises(ValueError):
                 bridge.pop_frame(bytearray(data))
         with self.assertRaises(ValueError):
             bridge.size(struct.pack('>HH', 0, 24))
+
+    def test_image_chunks_stage_private_file_then_drop_through_herdr(self):
+        upload = bridge.ImageUpload()
+        directory = Path(upload.directory.name)
+        try:
+            data = b'\x89PNG\r\n\x1a\nfixture'
+            self.assertEqual(upload.frame(3, struct.pack('>I', len(data)) + b'png'), b'')
+            upload.frame(4, data[:5])
+            upload.frame(4, data[5:])
+            drop = upload.frame(5, b'')
+            self.assertEqual(drop, b'\x1b[200~' + upload.path.encode() + b'\x1b[201~')
+            self.assertEqual(Path(upload.path).read_bytes(), data)
+            self.assertEqual(Path(upload.path).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        finally:
+            upload.close()
+        self.assertFalse(directory.exists())
+
+    def test_invalid_image_metadata_order_length_and_quota(self):
+        upload = bridge.ImageUpload()
+        try:
+            for kind, body in [(4, b'x'), (5, b''), (3, struct.pack('>I', 1) + b'exe'),
+                               (3, struct.pack('>I', bridge.ImageUpload.LIMIT + 1) + b'png')]:
+                with self.assertRaises(ValueError): upload.frame(kind, body)
+            upload.frame(3, struct.pack('>I', 2) + b'png')
+            with self.assertRaises(ValueError): upload.frame(5, b'')
+            with self.assertRaises(ValueError): upload.frame(4, b'abc')
+            with self.assertRaises(ValueError): upload.frame(3, struct.pack('>I', 1) + b'png')
+            upload.frame(4, b'ab'); upload.frame(5, b'')
+            upload.total = upload.SESSION_LIMIT
+            with self.assertRaises(ValueError): upload.frame(3, struct.pack('>I', 1) + b'png')
+        finally:
+            upload.close()
 
     def test_real_pty_input_unicode_resize_and_eof(self):
         # Fake only the Herdr executable; run the real bridge/PTY machinery.
@@ -45,6 +78,7 @@ class Framing(unittest.TestCase):
             fake = Path(directory) / 'herdr'
             fake.write_text(f'#!{sys.executable}\n' + '''import os, signal, tty
 assert os.sys.argv[1:] == ['--session', 'default']
+assert os.environ['HERDR_REMOTE_KEYBINDINGS'] == 'server'
 tty.setraw(0)
 def size(*args):
     s = os.get_terminal_size(0)

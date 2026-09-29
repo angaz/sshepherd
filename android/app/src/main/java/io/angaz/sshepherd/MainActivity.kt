@@ -42,6 +42,18 @@ class MainActivity : Activity() {
     private val outbound = ArrayDeque<ByteArray>()
     private var queuedBytes = 0
     private var resizePending = false
+    private var imageTransfer: ImageTransfer? = null
+    private var imageBytes = 0
+    private var readingContent = false
+    private var contentDialog: AlertDialog? = null
+    private var pickerSession = 0L
+    private var contentReadJob: ContentReadJob? = null
+    private var contentTimeout: Runnable? = null
+    // No queued requests/grants. A provider ignoring cancellation cannot block
+    // the next request; two stuck providers fail boundedly rather than leak threads.
+    private val contentReader = java.util.concurrent.ThreadPoolExecutor(0, 2, 20,
+        java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
+        java.util.concurrent.ThreadFactory { work -> Thread(work, "clipboard-file-reader").apply { isDaemon = true } })
     private val disconnectInBackground = Runnable { if (away && !destroyed) showServers() }
     private val backgroundColor = 0xff10141c.toInt()
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
@@ -131,11 +143,34 @@ class MainActivity : Activity() {
         accessories.add(button("Prefix") { view.accessory(KeyEvent.KEYCODE_A, 2) })
         accessories.add(button("Paste") {
             val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-            val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
-            if (text.isNotEmpty()) AlertDialog.Builder(this).setTitle("Paste into remote terminal?")
-                .setMessage("${text.length} characters. Pasted text may execute commands.")
-                .setNegativeButton("Cancel", null).setPositiveButton("Paste") { _, _ -> view.paste(text) }.show()
+            val clip = clipboard.primaryClip
+            if (clip == null || clip.itemCount != 1) { setNotice("Copy one text item or file first.", true); return@button }
+            val item = clip.getItemAt(0)
+            val uri = item.uri
+            if (uri != null) readContent(uri, view)
+            else item.text?.toString()?.takeIf { it.isNotEmpty() }?.let { confirmContent(PasteContent.Text(it), session, view) }
         })
+        accessories.add(button("Attach") {
+            if (phase != "connected" || imageTransfer != null || readingContent || contentDialog != null) return@button
+            pickerSession = session
+            startActivityForResult(android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(android.content.Intent.CATEGORY_OPENABLE); type = "*/*"
+            }, 727)
+        })
+        view.onContent = { info, flags ->
+            var granted = false
+            try {
+                if (flags and android.view.inputmethod.InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION != 0) {
+                    info.requestPermission(); granted = true
+                }
+                val release = { if (granted) info.releasePermission() }
+                if (readContent(info.contentUri, view, release)) true
+                else { release(); false }
+            } catch (_: Exception) {
+                if (granted) runCatching { info.releasePermission() }
+                setNotice("Cannot read the keyboard's image.", true); false
+            }
+        }
         toolbar(content, accessories)
         view.onInput = ::enqueueInput
         view.onGeometry = { _, _ -> resizePending = true; flushInput() }
@@ -143,6 +178,84 @@ class MainActivity : Activity() {
         view.onMessage = { message -> setNotice(message, true) }
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
         view.requestFocus()
+    }
+    @Deprecated("Legacy activity result API")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 727 && resultCode == RESULT_OK && pickerSession == session) {
+            val view = terminal ?: return
+            data?.data?.let { readContent(it, view) }
+        }
+        if (requestCode == 727) pickerSession = 0
+    }
+    private fun readContent(uri: android.net.Uri, view: TerminalView, release: () -> Unit = {}): Boolean {
+        if (uri.scheme != "content" || destroyed || phase != "connected" || view !== terminal || readingContent || imageTransfer != null || contentDialog != null) return false
+        val id = session
+        readingContent = true
+        setNotice("Reading file…")
+        val cancellation = android.os.CancellationSignal()
+        lateinit var job: ContentReadJob
+        job = ContentReadJob(open = {
+            val descriptor = contentResolver.openAssetFileDescriptor(uri, "r", cancellation)
+                ?: throw IllegalArgumentException("Cannot open file")
+            try { descriptor.createInputStream() } catch (error: Exception) { descriptor.close(); throw error }
+        }, cancelProvider = { cancellation.cancel() }, release = release) { result ->
+            handler.post {
+                if (!destroyed && session == id && view === terminal && contentReadJob === job) {
+                    contentTimeout?.let { handler.removeCallbacks(it) }; contentTimeout = null
+                    contentReadJob = null; readingContent = false
+                    result.onSuccess { confirmContent(it, id, view) }
+                        .onFailure { setNotice("Cannot paste file. Use PNG/JPEG/GIF/WebP/BMP (≤16 MiB) or UTF-8 text (≤60 KB).", true) }
+                }
+            }
+        }
+        contentReadJob = job
+        contentTimeout = Runnable {
+            if (contentReadJob === job) {
+                cancelContentRead()
+                setNotice("File provider timed out. Try selecting the file again.", true)
+            }
+        }.also { handler.postDelayed(it, 15000) }
+        try { contentReader.execute(job) } catch (_: java.util.concurrent.RejectedExecutionException) {
+            cancelContentRead()
+            setNotice("File provider is busy. Retry or restart the app.", true)
+        }
+        // Ownership of permission release has transferred, including rejection.
+        return true
+    }
+    private fun cancelContentRead() {
+        contentTimeout?.let { handler.removeCallbacks(it) }; contentTimeout = null
+        val job = contentReadJob; contentReadJob = null
+        readingContent = false
+        job?.cancel()
+    }
+    private fun confirmContent(content: PasteContent, id: Long, view: TerminalView) {
+        if (id == 0L || session != id || terminal !== view || phase != "connected" || imageTransfer != null || contentDialog != null) return
+        val message = when (content) {
+            is PasteContent.Text -> "${content.value.length} characters. Pasted text may execute commands."
+            is PasteContent.Image -> "${content.bytes.size / 1024} KB ${content.extension.uppercase()}. Herdr will save the image remotely and paste its path into the current terminal."
+        }
+        contentDialog = AlertDialog.Builder(this).setTitle(if (content is PasteContent.Image) "Paste image through Herdr?" else "Paste file/text contents?")
+            .setMessage(message).setNegativeButton("Cancel", null).setPositiveButton("Paste") { _, _ ->
+                if (session != id || terminal !== view || phase != "connected" || imageTransfer != null) return@setPositiveButton
+                when (content) {
+                    is PasteContent.Text -> view.paste(content.value)
+                    is PasteContent.Image -> {
+                        if (imageBytes + content.bytes.size > 64 * 1024 * 1024) {
+                            setNotice("Image session quota reached (64 MiB). Reconnect to upload more.", true)
+                        } else if (view.prepareContent()) {
+                            imageBytes += content.bytes.size
+                            imageTransfer = ImageTransfer(content)
+                            view.acceptingInput = false
+                            setNotice("Sending image to Herdr…")
+                            flushInput()
+                        }
+                    }
+                }
+            }.create().also { dialog ->
+                dialog.setOnDismissListener { if (contentDialog === dialog) contentDialog = null }
+                dialog.show()
+            }
     }
     private fun connectTo(host: String) {
         if (destroyed || host !in hosts) return
@@ -188,6 +301,14 @@ class MainActivity : Activity() {
             if (!Native.send(session, frame)) return
             outbound.removeFirst(); queuedBytes -= frame.size
         }
+        imageTransfer?.let { transfer ->
+            transfer.pump { Native.send(session, it) }
+            if (transfer.done) {
+                imageTransfer = null
+                view.acceptingInput = true
+                setNotice("Image queued for Herdr image paste.")
+            }
+        }
     }
     private fun poll(id: Long) {
         if (destroyed || id != session) return
@@ -203,7 +324,7 @@ class MainActivity : Activity() {
                     terminal?.feed(Base64.decode(event.getString("data"), Base64.NO_WRAP))
                 } else {
                     phase = event.getString("phase")
-                    terminal?.acceptingInput = phase == "connected"
+                    terminal?.acceptingInput = phase == "connected" && imageTransfer == null
                     setNotice(event.getString("message"), phase == "error")
                     if (phase == "connected") { activeHost?.let { failures.remove(it) }; resizePending = true }
                     if (phase == "error") activeHost?.let { failures.add(it) }
@@ -219,6 +340,9 @@ class MainActivity : Activity() {
         val old = session; session = 0; phase = "idle"
         terminal?.acceptingInput = false
         outbound.clear(); queuedBytes = 0; resizePending = false
+        cancelContentRead()
+        imageTransfer = null; imageBytes = 0; pickerSession = 0
+        contentDialog?.dismiss(); contentDialog = null
         if (old != 0L) Native.close(old)
     }
     private fun showSettings() {
@@ -256,7 +380,7 @@ class MainActivity : Activity() {
     @Deprecated("Legacy Android back callback")
     override fun onBackPressed() { if (activeHost != null) showServers() else super.onBackPressed() }
     override fun onDestroy() {
-        destroyed = true; handler.removeCallbacksAndMessages(null); disconnect(); terminal?.close(); terminal = null
+        destroyed = true; contentReader.shutdownNow(); handler.removeCallbacksAndMessages(null); disconnect(); terminal?.close(); terminal = null
         super.onDestroy()
     }
 }

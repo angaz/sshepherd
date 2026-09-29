@@ -14,6 +14,7 @@ internal fun configureTerminalEditor(info: EditorInfo) {
     info.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
     info.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
         EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_ACTION_NONE
+    info.contentMimeTypes = arrayOf("image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp")
     info.initialCapsMode = 0
     info.initialSelStart = 0
     info.initialSelEnd = 0
@@ -34,6 +35,7 @@ internal class TerminalInputConnection(
     private val applyEdit: (TerminalEdit) -> Boolean,
     private val key: (KeyEvent) -> Boolean,
     private val retainContext: () -> Boolean = { true },
+    private val content: (android.view.inputmethod.InputContentInfo, Int) -> Boolean = { _, _ -> false },
     private val composingChanged: (String) -> Unit = {}
 ) : BaseInputConnection(target, true) {
     private val buffer = SpannableStringBuilder()
@@ -176,6 +178,10 @@ internal class TerminalInputConnection(
             Selection.setSelection(buffer, start + b - a)
         }
         return synchronize(extraBefore, extraAfter, protectedPoints)
+    }
+    override fun commitContent(info: android.view.inputmethod.InputContentInfo, flags: Int, opts: android.os.Bundle?): Boolean {
+        if (!active) return false
+        return content(info, flags)
     }
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (!active) return false

@@ -10,6 +10,7 @@ import signal
 import struct
 import sys
 import termios
+import tempfile
 
 MAX_FRAME = 65536
 
@@ -20,7 +21,7 @@ def pop_frame(buffer):
     kind, length = struct.unpack('>BI', buffer[:5])
     if length > MAX_FRAME:
         raise ValueError('oversized input frame')
-    if kind not in (1, 2) or (kind == 2 and length != 4):
+    if kind not in (1, 2, 3, 4, 5) or (kind == 2 and length != 4) or (kind == 5 and length != 0):
         raise ValueError('invalid input frame')
     if len(buffer) < 5 + length:
         return None
@@ -34,6 +35,56 @@ def size(body):
     if not 2 <= cols <= 500 or not 2 <= rows <= 300:
         raise ValueError('invalid terminal dimensions')
     return struct.pack('HHHH', rows, cols, 0, 0)
+
+
+class ImageUpload:
+    """Stage a bounded image for Herdr's native file-drop -> ClipboardImage path.
+
+    Only generated paths enter the PTY. Herdr reads this staging file and sends
+    its existing ClipboardImage message to the pane selected by that frontend.
+    """
+    LIMIT = 16 * 1024 * 1024
+    SESSION_LIMIT = 64 * 1024 * 1024
+
+    def __init__(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='sshepherd-images-', dir='/tmp')
+        self.file = None
+        self.path = None
+        self.remaining = 0
+        self.total = 0
+
+    def frame(self, kind, body):
+        if kind == 3:
+            if self.file is not None or len(body) not in range(7, 9):
+                raise ValueError('invalid image start')
+            length = struct.unpack('>I', body[:4])[0]
+            extension = body[4:].decode('ascii')
+            if extension not in ('png', 'jpg', 'gif', 'webp', 'bmp') or not 0 < length <= self.LIMIT:
+                raise ValueError('invalid image metadata')
+            if self.total + length > self.SESSION_LIMIT:
+                raise ValueError('image session quota reached; reconnect')
+            self.total += length
+            self.remaining = length
+            fd, self.path = tempfile.mkstemp(suffix='.' + extension, dir=self.directory.name)
+            self.file = os.fdopen(fd, 'wb')
+        elif kind == 4:
+            if self.file is None or not body or len(body) > self.remaining:
+                raise ValueError('invalid image chunk')
+            self.file.write(body)
+            self.remaining -= len(body)
+        elif kind == 5:
+            if self.file is None or self.remaining or body:
+                raise ValueError('incomplete image')
+            self.file.close()
+            self.file = None
+            # Keep the file until detach: Herdr consumes the drop asynchronously.
+            return b'\x1b[200~' + self.path.encode('ascii') + b'\x1b[201~'
+        return b''
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+        self.directory.cleanup()
 
 
 def main():
@@ -54,8 +105,12 @@ def main():
         fcntl.ioctl(0, termios.TIOCSWINSZ, geometry)
         os.environ['TERM'] = 'xterm-256color'
         os.environ['COLORTERM'] = 'truecolor'
+        # Enable Herdr's remote-image file-drop bridge while retaining the
+        # server's keybindings. No separate upload service or shell command.
+        os.environ['HERDR_REMOTE_KEYBINDINGS'] = 'server'
         os.execvp('herdr', ['herdr', '--session', 'default'])
     pending = bytearray()
+    images = ImageUpload()
     os.set_blocking(master, False)
     selector = selectors.DefaultSelector()
     selector.register(0, selectors.EVENT_READ)
@@ -71,8 +126,14 @@ def main():
                     pending.extend(body)
                     if len(pending) > 1024 * 1024:
                         raise ValueError('PTY input backlog full')
-                else:
+                elif kind == 2:
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size(body))
+                else:
+                    drop = images.frame(kind, body)
+                    if drop:
+                        pending.extend(drop)
+                        if len(pending) > 1024 * 1024:
+                            raise ValueError('PTY input backlog full')
             selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0))
             for key, events in selector.select():
                 if key.fd == 0:
@@ -104,6 +165,7 @@ def main():
         except ProcessLookupError:
             pass
         os.waitpid(pid, 0)
+        images.close()
 
 
 if __name__ == '__main__':

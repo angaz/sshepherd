@@ -12,6 +12,9 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Test physical keyboard: Ctrl+C, Alt terminal shortcuts, AltGr/layout characters, dead keys, Shift+Tab, arrows in normal/application modes and Kitty-aware apps.
 - [ ] Show/hide IME and rotate: terminal fits between native navigation/accessory rows; remote geometry updates even after input backpressure.
 - [ ] Verify bold/italic/underline, RGB/palette colours, combining marks, CJK/emoji wide cells, cursor, alternate screen, full-screen TUI repaint.
+- [ ] Use Attach with a UTF-8 text file and verify contents paste after confirmation, not a path. Cancel without sending anything.
+- [ ] Paste an image via clipboard URI, keyboard image insertion and Attach; verify Herdr's remote image path reaches the intended pane and the agent can read it. Confirm ≤16 MiB/image and 64 MiB/session handling.
+- [ ] Disconnect or leave the app while a content provider is reading; verify grants/streams are released and no stale upload reaches another session. Verify the 15-second provider timeout.
 - [ ] Switch tabs/workspaces and zoom with ctrl+a-based controls; pending composition commits before navigation.
 - [ ] Temporarily disable VPN during output; restore it and confirm replay without duplicate output/input. Denied Resume must not create a new exec automatically.
 - [ ] Leave an actively printing terminal: phone frontend detaches, persistent panes remain.

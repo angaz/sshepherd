@@ -16,6 +16,8 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 4. Herdr opens its existing `default` session. **Prev tab / Next tab / Workspaces / Zoom** send the `Ctrl+A` prefix; configure matching server bindings. Taps/drags send mouse events to Herdr and its TUIs.
 5. **Keyboard** opens the normal Android IME with suggestions/autocorrection and swipe typing permitted. Automatic capitalization stays off, and the app requests no personalized learning from terminal input. The horizontally scrollable accessory row provides Ctrl, Ctrl+C/D, Esc, Tab, Enter, arrows, Home/End, PgUp/PgDn, Prefix and confirmed Paste. Physical keyboards use Ghostty's key encoder, including terminal/application cursor modes and layout-generated AltGr text.
 
+**Images and text files:** use **Attach** to choose a file, **Paste** for a clipboard file/image, or the keyboard's image-insertion action. PNG/JPEG/GIF/WebP/BMP images (up to 16 MiB) are transferred through Herdr's native image-paste mechanism; Herdr saves a remote temporary file and pastes its path into the current pane. UTF-8 text files (up to 60 KB) paste their contents after confirmation, not a filename. Unsupported binary/control-containing files are rejected. Input pauses during image transfer; the status indicates queuing, not a server acknowledgement. Upload staging is capped at 64 MiB per connection; reconnect to reset it.
+
 Returning to Servers detaches the phone's Herdr frontend, not the persistent server or panes. Network interruptions resume the same Eternal exec with sequence/ACK replay. Input is paused while reconnecting. Backgrounding for over 60 seconds detaches.
 
 ## Implementation
@@ -46,7 +48,7 @@ Native libghostty-vt ← terminal bytes → Rust Eternal client
                                   Persistent Herdr server
 ```
 
-Eternal executes commands over pipes without a PTY. The bundled helper runs **in memory remotely**, creates a PTY and launches the installed Herdr frontend. Requires `python3` and `herdr` on Eternal's PATH; configure the server to provide both. No files, daemon, new listener or configuration changes are installed remotely.
+Eternal executes commands over pipes without a PTY. The bundled helper runs **in memory remotely**, creates a PTY and launches the installed Herdr frontend. Requires `python3` and `herdr` on Eternal's PATH; configure the server to provide both. No daemon, new listener or configuration changes are installed remotely. Image transfer creates private temporary staging files that are removed on normal detach; Herdr manages its own final clipboard-image files.
 
 ## Security
 
