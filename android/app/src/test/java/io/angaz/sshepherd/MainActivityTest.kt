@@ -21,7 +21,9 @@ class MainActivityTest {
         for (id in listOf(R.mipmap.ic_launcher, R.mipmap.ic_launcher_round)) {
             val adaptive = app.getDrawable(id) as android.graphics.drawable.AdaptiveIconDrawable
             assertNotNull(adaptive.background)
-            assertNotNull(adaptive.foreground)
+            val foreground = adaptive.foreground as android.graphics.drawable.InsetDrawable
+            foreground.setBounds(0, 0, 1000, 1000)
+            assertEquals(android.graphics.Rect(120, 120, 880, 880), foreground.drawable!!.bounds)
         }
     }
     @Test fun screenshotsAndAppPreviewsAreNotBlocked() {
