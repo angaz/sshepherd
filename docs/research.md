@@ -4,7 +4,7 @@ The app uses no WebView/ghostty-web fallback. The current app uses standard Andr
 
 ## Deployment assumptions
 
-The client communicates with user-configured hosts over a private overlay network. Host inventory and deployment-specific settings are intentionally not included here. No credentials or local configuration are bundled.
+The client communicates with user-configured hosts. Host inventory and deployment-specific settings are intentionally not included here. No credentials or local configuration are bundled.
 
 ## Native Ghostty integration
 
@@ -30,4 +30,4 @@ Pinned protocol source: [Mic92/herdr-eternal 28342f2854ce916724771072c51b432a4a3
 
 Herdr's `remote-client-bridge` is a private binary renderer protocol, not an ANSI stream. Instead, the existing Herdr frontend runs in an in-memory Python-created remote PTY, giving Ghostty real terminal output and retaining Herdr's native tabs/panes/mouse routing. No additional server service is required.
 
-The trust policy requires explicit consent and independently authenticated server identity because server certificates are not verified. Destinations are restricted to allowed address ranges. Certificate pinning and OIDC are not implemented.
+The trust policy requires explicit consent and independently authenticated server identity because server certificates are not verified. Destinations are restricted to ULA IPv6, RFC1918 IPv4 and CGNAT IPv4. Certificate pinning and OIDC are not implemented.

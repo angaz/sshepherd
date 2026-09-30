@@ -15,7 +15,7 @@ class HostStoreTest {
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("hosts", Context.MODE_PRIVATE).edit().clear().commit()
         val store = HostStore(app)
-        assertEquals(6, store.read().size)
+        assertTrue(store.read().isEmpty())
         val host = HostStore.entry(" My workstation ", "192.0.2.10")
         store.save(listOf(host))
         assertEquals(listOf(host), HostStore(app).read())

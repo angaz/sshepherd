@@ -14,6 +14,9 @@ find android/app/src/main/assets -mindepth 1 -delete
 mkdir -p android/app/src/main/assets/licenses
 cp native/vendor/eternal-proto/LICENSE android/app/src/main/assets/licenses/herdr-eternal.txt
 cp licenses/Apache-2.0.txt android/app/src/main/assets/licenses/material-androidx.txt
-(cd native && RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384" cargo ndk -t arm64-v8a -t x86_64 --platform 26 -o ../android/app/src/main/jniLibs build --release --locked)
+source ./scripts/native-path-flags.sh
+export CARGO_ENCODED_RUSTFLAGS+=$'\x1f-C\x1flink-arg=-Wl,-z,max-page-size=16384'
+(cd native && cargo ndk -t arm64-v8a -t x86_64 --platform 26 -o ../android/app/src/main/jniLibs build --release --locked)
 (cd android && ./gradlew --no-daemon "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2" testDebugUnitTest assembleDebug lintDebug)
+python3 scripts/check-artifact-privacy.py android/app/build/outputs/apk/debug/app-debug.apk
 printf '\nNative APK: android/app/build/outputs/apk/debug/app-debug.apk\n'

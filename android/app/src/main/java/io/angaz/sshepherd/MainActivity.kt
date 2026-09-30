@@ -168,7 +168,7 @@ class MainActivity : AppCompatActivity() {
         }
         val (nameBox, name) = field("Name", existing?.name.orEmpty(), R.id.host_name)
         val (addressBox, address) = field("Hostname or IP address", existing?.address.orEmpty(), R.id.host_address)
-        addressBox.helperText = "private addresses only · UDP 7443"
+        addressBox.helperText = "Private addresses only · UDP 7443"
         layout.addView(label("These hosts receive your shared Eternal token. Use only trusted private addresses; TLS identity is not verified.", 13f))
         val builder = MaterialAlertDialogBuilder(this).setTitle(if (existing == null) "Add host" else "Edit host")
             .setView(ScrollView(this).apply { addView(layout) })

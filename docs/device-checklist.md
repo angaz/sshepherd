@@ -2,9 +2,9 @@
 
 Automated native-engine/JNI and Robolectric tests do not replace on-device checks.
 
-- [ ] Install the **0.2.1-native** APK over the old debug build. Confirm native controls and no WebView/browser dependency.
+- [ ] Install the current APK over a previous debug build. Confirm native controls and no WebView/browser dependency.
 - [ ] Launch offline: the empty host list appears; added hosts remain listed and retryable after connection failures. Offline connection failure leaves the host visible and retryable.
-- [ ] Save shared token, relaunch and connect; Forget token makes the next connection request credentials. Confirm server trust notice.
+- [ ] Save shared token, relaunch and connect; Forget token makes the next connection request credentials. Confirm the server trust notice.
 - [ ] Connect through mesh IPv6 UDP 7443 and verify existing `default` Herdr state.
 - [ ] Tap and drag tab/pane controls and mouse-aware TUIs. Exactly one press/release pair, correctly aligned to cells; no stuck mouse on cancellation.
 - [ ] Test Gboard and the preferred IME: suggestions, swipe typing, committed text, composition, Unicode/emoji, backspace at an empty local editor, Enter while composing, cancellation and paste. Commands must not be automatically capitalized.
@@ -25,4 +25,4 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Background for <60 seconds and >60 seconds; confirm resume/detach. Force-stop and reconnect.
 - [ ] Run on a 16 KB-page-size ARM64 phone/emulator. ELF/ZIP alignment checks alone do not prove runtime behavior.
 
-Current automated coverage includes real native Ghostty and JNI execution on Linux, Kotlin InputConnection/view tests under Robolectric, loopback QUIC and real PTY tests. Physical Android rendering/IME integration and connectivity remain unverified.
+Current automated coverage includes real native Ghostty and JNI execution on Linux, Kotlin InputConnection/view tests under Robolectric, loopback QUIC and real PTY tests. Physical Android rendering/IME integration and connectivity require manual validation.

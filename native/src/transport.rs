@@ -70,9 +70,8 @@ async fn status(events: &mpsc::Sender<Event>, phase: &'static str, message: impl
         .await;
 }
 
-// Certificate verification is disabled only with explicit user consent.
-// for user-configured private/mesh endpoints, after explicit consent in the UI.
-// Authenticate server identity independently; the self-signed TLS cert does not.
+// Enabled only after explicit consent in the Android UI. Server identity must
+// be authenticated independently; the self-signed TLS certificate does not.
 #[derive(Debug)]
 struct ConsentedServerIdentity;
 impl ServerCertVerifier for ConsentedServerIdentity {

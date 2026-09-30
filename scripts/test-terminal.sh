@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ./scripts/prepare-ghostty.sh
 root=$PWD
-(cd .deps/libghostty-vt && zig build -Demit-lib-vt -Dsimd=false -Doptimize=ReleaseFast --prefix "$root/.deps/ghostty-host")
-"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Wno-missing-field-initializers \
+source ./scripts/native-path-flags.sh
+(cd .deps/libghostty-vt && zig build -Demit-lib-vt -Dsimd=false -Doptimize=ReleaseFast -Dstrip=true --prefix "$root/.deps/ghostty-host")
+"${CXX:-c++}" "${native_cpp_flags[@]}" -Wl,-S -std=c++17 -O2 -Wall -Wextra -Wno-missing-field-initializers \
   -I.deps/libghostty-vt/include terminal/engine.cpp terminal/engine_test.cpp \
   .deps/ghostty-host/lib/libghostty-vt.a -lpthread -ldl -lm -o .deps/terminal-test
 .deps/terminal-test
@@ -13,9 +14,10 @@ case "$(uname -s)" in
   Linux) jni_host=linux; extension=so;;
   Darwin) jni_host=darwin; extension=dylib;;
 esac
-"${CXX:-c++}" -std=c++17 -O2 -shared -fPIC -I.deps/libghostty-vt/include \
+"${CXX:-c++}" "${native_cpp_flags[@]}" -Wl,-S -std=c++17 -O2 -shared -fPIC -I.deps/libghostty-vt/include \
   -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/$jni_host" terminal/engine.cpp terminal/jni.cpp \
   .deps/ghostty-host/lib/libghostty-vt.a -lpthread -ldl -lm -o ".deps/libsshepherd_terminal.$extension"
+python3 scripts/check-artifact-privacy.py .deps/terminal-test ".deps/libsshepherd_terminal.$extension"
 mkdir -p .deps/jni-test
 "$JAVA_HOME/bin/javac" -d .deps/jni-test terminal/jvm/io/angaz/sshepherd/GhosttyNative.java
 "$JAVA_HOME/bin/java" -Djava.library.path=.deps -cp .deps/jni-test io.angaz.sshepherd.GhosttyNative
