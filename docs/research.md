@@ -2,9 +2,9 @@
 
 The app uses no WebView/ghostty-web fallback. The current app uses standard Android Kotlin Views, a Canvas renderer and **native libghostty-vt through C++ JNI**. There is no HTML/JS/WASM or browser dependency in the APK.
 
-## Server requirements
+## Deployment assumptions
 
-Configure trusted server endpoints and credentials locally; no deployment inventory is bundled.
+The client communicates with user-configured hosts over a private overlay network. Host inventory and deployment-specific settings are intentionally not included here. No credentials or local configuration are bundled.
 
 ## Native Ghostty integration
 

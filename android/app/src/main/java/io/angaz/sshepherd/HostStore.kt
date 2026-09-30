@@ -32,8 +32,7 @@ internal class HostStore(context: Context) {
         check(prefs.edit().putString("inventory", array.toString()).commit()) { "Could not save hosts" }
     }
     companion object {
-        fun defaults() = listOf("host-a", "host-b", "host-c", "host-d", "host-e", "host-f")
-            .map { HostEntry(it, it, "$it.example.invalid") }
+        fun defaults() = emptyList<HostEntry>()
         fun entry(name: String, address: String, id: String = UUID.randomUUID().toString()): HostEntry {
             val label = name.trim()
             require(label.isNotEmpty() && label.length <= 64 && label.none { it.isISOControl() }) { "Enter a name (1–64 characters)" }

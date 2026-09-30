@@ -3,7 +3,7 @@
 Automated native-engine/JNI and Robolectric tests do not replace on-device checks.
 
 - [ ] Install the **0.2.1-native** APK over the old debug build. Confirm native controls and no WebView/browser dependency.
-- [ ] Launch offline: the empty host list appears. Offline connection failure leaves the host visible and retryable.
+- [ ] Launch offline: the empty host list appears; added hosts remain listed and retryable after connection failures. Offline connection failure leaves the host visible and retryable.
 - [ ] Save shared token, relaunch and connect; Forget token makes the next connection request credentials. Confirm server trust notice.
 - [ ] Connect through mesh IPv6 UDP 7443 and verify existing `default` Herdr state.
 - [ ] Tap and drag tab/pane controls and mouse-aware TUIs. Exactly one press/release pair, correctly aligned to cells; no stuck mouse on cancellation.

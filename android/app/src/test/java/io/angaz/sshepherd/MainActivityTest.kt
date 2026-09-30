@@ -55,25 +55,15 @@ class MainActivityTest {
         assertEquals(0, controller.get().window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE)
         controller.pause().stop().destroy()
     }
-    @Test fun nativeServerInventoryExistsWithoutNetworkOrCredentials() {
+    @Test fun emptyServerInventoryExistsWithoutNetworkOrCredentials() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         val views = children(activity.window.decorView)
         val cards = views.filterIsInstance<com.google.android.material.card.MaterialCardView>()
-        for (host in listOf("host-a", "host-b", "host-c", "host-d", "host-e", "host-f")) {
-            assertTrue("Missing $host", cards.any { it.contentDescription.toString().startsWith("$host.") })
-        }
+        assertTrue(cards.isEmpty())
         assertFalse(views.any { it.javaClass.name.contains("WebView") })
         assertFalse(views.any { it is android.widget.HorizontalScrollView })
         assertFalse(views.filterIsInstance<android.widget.TextView>().any { it.text.contains("Tap to connect") })
-        val card = cards.first()
-        val density = activity.resources.displayMetrics.density
-        card.measure(View.MeasureSpec.makeMeasureSpec((360 * density).toInt(), View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec((200 * density).toInt(), View.MeasureSpec.AT_MOST))
-        card.layout(0, 0, card.measuredWidth, card.measuredHeight)
-        assertTrue(card.measuredHeight <= 80 * density)
-        val labels = children(card).filterIsInstance<android.widget.TextView>()
-        assertTrue(labels.single { it.text == "host-a.example.invalid" }.left > labels.single { it.text == "host-a" }.left)
         assertTrue(views.any { it is com.google.android.material.appbar.MaterialToolbar })
         controller.pause().stop().destroy()
     }
