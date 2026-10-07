@@ -225,21 +225,27 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(notice)
         content.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
-        val ctrl = button("Ctrl") {}.apply { isCheckable = true }
+        val ctrl = button("Ctrl") {}.apply { isCheckable = true; contentDescription = "Control modifier off" }
         ctrl.setOnClickListener {
             view.ctrlLatched = ctrl.isChecked
             ctrl.contentDescription = if (ctrl.isChecked) "Control modifier on" else "Control modifier off"
+            ctrl.tooltipText = ctrl.contentDescription
         }
-        view.onCtrlConsumed = { ctrl.isChecked = false; ctrl.contentDescription = "Control modifier off" }
+        view.onCtrlConsumed = {
+            ctrl.isChecked = false; ctrl.contentDescription = "Control modifier off"
+            ctrl.tooltipText = ctrl.contentDescription
+        }
         fun key(name: String, code: Int, description: String = name) = button(name) { view.accessory(code) }.apply { contentDescription = description }
-        val primary = listOf(key("Esc", KeyEvent.KEYCODE_ESCAPE, "Escape"), key("Tab", KeyEvent.KEYCODE_TAB),
-            button("Ctrl+C") { view.accessory(KeyEvent.KEYCODE_C, 2) })
-        val accessories = mutableListOf(ctrl,
-            key("↑", KeyEvent.KEYCODE_DPAD_UP, "Up arrow"), key("Enter", KeyEvent.KEYCODE_ENTER), key("⌫", KeyEvent.KEYCODE_DEL, "Backspace"),
-            key("←", KeyEvent.KEYCODE_DPAD_LEFT, "Left arrow"), key("↓", KeyEvent.KEYCODE_DPAD_DOWN, "Down arrow"),
-            key("→", KeyEvent.KEYCODE_DPAD_RIGHT, "Right arrow"), key("Del", KeyEvent.KEYCODE_FORWARD_DEL, "Forward delete"),
-            key("Home", KeyEvent.KEYCODE_MOVE_HOME), key("End", KeyEvent.KEYCODE_MOVE_END),
-            key("PgUp", KeyEvent.KEYCODE_PAGE_UP, "Page up"), key("PgDn", KeyEvent.KEYCODE_PAGE_DOWN, "Page down"))
+        val primary = listOf(
+            listOf(key("Esc", KeyEvent.KEYCODE_ESCAPE, "Escape"), key("Tab", KeyEvent.KEYCODE_TAB),
+                key("Home", KeyEvent.KEYCODE_MOVE_HOME), key("↑", KeyEvent.KEYCODE_DPAD_UP, "Up arrow"),
+                key("End", KeyEvent.KEYCODE_MOVE_END), key("PgUp", KeyEvent.KEYCODE_PAGE_UP, "Page up")),
+            listOf(ctrl, button("Ctrl+C") { view.accessory(KeyEvent.KEYCODE_C, 2) },
+                key("←", KeyEvent.KEYCODE_DPAD_LEFT, "Left arrow"), key("↓", KeyEvent.KEYCODE_DPAD_DOWN, "Down arrow"),
+                key("→", KeyEvent.KEYCODE_DPAD_RIGHT, "Right arrow"), key("PgDn", KeyEvent.KEYCODE_PAGE_DOWN, "Page down"))
+        )
+        val accessories = mutableListOf(key("Enter", KeyEvent.KEYCODE_ENTER), key("⌫", KeyEvent.KEYCODE_DEL, "Backspace"),
+            key("Del", KeyEvent.KEYCODE_FORWARD_DEL, "Forward delete"))
         accessories.add(button("Ctrl+D") { view.accessory(KeyEvent.KEYCODE_D, 2) })
         accessories.add(button("Prefix") { view.accessory(KeyEvent.KEYCODE_A, 2) })
         accessories.add(button("Paste") {
