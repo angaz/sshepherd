@@ -62,6 +62,39 @@ class TerminalControlsTest {
         ctrl.performClick()
         assertFalse(ctrl.isChecked)
     }
+    @Test fun extraKeysMatchPrimaryStyleAndSizeAcrossExpansionAndResizing() {
+        val keys = primary()
+        var clicks = 0
+        val extras = listOf("Enter", "⌫", "Del", "Ctrl+D", "Prefix", "Paste", "Attach").map(::button)
+        extras.forEach { it.setOnClickListener { clicks++ } }
+        val controls = TerminalControls(context, keys, extras) {}
+        val reference = keys[0][0]
+        for (width in listOf(320, 360, 720)) {
+            controls.setExpanded(false)
+            layout(controls, width)
+            assertTrue(extras.none(::visible))
+            controls.setExpanded(true)
+            layout(controls, width)
+            assertEquals(1, extras.map { it.top }.distinct().size)
+            extras.forEach {
+                assertTrue(visible(it))
+                assertEquals(reference.height, it.height)
+                assertTrue(kotlin.math.abs(reference.width - it.width) <= 1)
+                assertEquals(reference.textSize, it.textSize, 0f)
+                assertEquals(reference.currentTextColor, it.currentTextColor)
+                assertEquals(reference.backgroundTintList!!.defaultColor, it.backgroundTintList!!.defaultColor)
+                assertEquals(reference.paddingLeft, it.paddingLeft)
+                assertEquals(reference.paddingRight, it.paddingRight)
+                assertEquals(reference.insetTop, it.insetTop)
+                assertEquals(reference.insetBottom, it.insetBottom)
+                assertEquals(reference.minWidth, it.minWidth)
+                assertEquals(it.contentDescription, it.tooltipText)
+                assertEquals(it.text.toString().uppercase(), it.transformationMethod.getTransformation(it.text, it).toString())
+                it.performClick()
+            }
+        }
+        assertEquals(21, clicks)
+    }
     @Test fun extraKeysExpandWithoutHorizontalScrollingAndKeyboardIsBottomRight() {
         var keyboard = 0
         val extras = (1..16).map { button("Key $it") }
@@ -85,10 +118,10 @@ class TerminalControlsTest {
         assertTrue(controls.expanded)
         assertEquals("Hide extra keys", expand.contentDescription)
         assertEquals(expand.contentDescription, expand.tooltipText)
-        assertEquals(4, extras.map { it.top }.distinct().size)
-        assertTrue(extras.all { it.width >= 48 && it.right <= 352 })
+        assertEquals(3, extras.map { it.top }.distinct().size)
+        assertTrue(extras.all { it.width >= 44 && it.height == 40 && it.right <= 352 })
         layout(controls, 720)
-        assertEquals(2, extras.map { it.top }.distinct().size)
+        assertEquals(3, extras.map { it.top }.distinct().size)
         layout(controls, 360, 220)
         val panel = extras[0].parent.parent as View
         assertTrue(panel.height <= 100)
