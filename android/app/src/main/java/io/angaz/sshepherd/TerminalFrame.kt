@@ -45,6 +45,11 @@ internal object PtyFrames {
         require(kind in 3..5 && bytes.size <= 65536)
         return ByteBuffer.allocate(bytes.size + 5).put(kind.toByte()).putInt(bytes.size).put(bytes).array()
     }
+    fun directory(record: org.json.JSONObject): ByteArray {
+        val bytes = record.toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= 1024)
+        return ByteBuffer.allocate(bytes.size + 5).put(6).putInt(bytes.size).put(bytes).array()
+    }
     fun resize(cols: Int, rows: Int): ByteArray = ByteBuffer.allocate(9).put(2).putInt(4)
         .putShort(cols.coerceIn(2, 500).toShort()).putShort(rows.coerceIn(2, 300).toShort()).array()
 }

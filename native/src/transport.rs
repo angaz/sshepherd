@@ -59,6 +59,9 @@ pub enum Event {
     Output {
         data: String,
     },
+    Directory {
+        data: String,
+    },
 }
 
 async fn status(events: &mpsc::Sender<Event>, phase: &'static str, message: impl Into<String>) {
@@ -223,6 +226,7 @@ async fn session(
     mut input: mpsc::Receiver<Vec<u8>>,
     events: &mpsc::Sender<Event>,
 ) -> Result<()> {
+    let mut bridge_output = crate::bridge_output::BridgeOutput::default();
     let mut resume: Option<String> = None;
     let mut seen = 0u64;
     let mut sequence = 0u64;
@@ -303,7 +307,16 @@ async fn session(
                     }
                     message = conn.receive::<Msg>() => {
                         match message? {
-                            Msg::Stdout { seq, data } | Msg::Stderr { seq, data } => {
+                            Msg::Stdout { seq, data } => {
+                                if seq > seen {
+                                    for event in bridge_output.push(&data)? {
+                                        events.send(event).await.context("View closed")?;
+                                    }
+                                    seen = seq;
+                                }
+                                conn.send(&Msg::Ack { seq: seen }).await?;
+                            }
+                            Msg::Stderr { seq, data } => {
                                 if seq > seen {
                                     events.send(Event::Output { data: STANDARD.encode(&data) }).await.context("View closed")?;
                                     seen = seq;

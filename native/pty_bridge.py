@@ -1,10 +1,17 @@
-"""Runs remotely, in memory. stdin: [type:u8][length:u32 BE][body]; stdout: VT bytes.
+"""Runs remotely, in memory. stdin/stdout: [type:u8][length:u32 BE][body].
+stdout type 1 is VT; type 2 is a bounded native-directory JSON response.
 Only the Herdr *client* owns this PTY; disconnecting never kills the Herdr server.
 """
 import errno
 import fcntl
 import os
 import pty
+import json
+from pathlib import Path
+import queue
+import socket
+import threading
+import time
 import selectors
 import signal
 import struct
@@ -21,7 +28,7 @@ def pop_frame(buffer):
     kind, length = struct.unpack('>BI', buffer[:5])
     if length > MAX_FRAME:
         raise ValueError('oversized input frame')
-    if kind not in (1, 2, 3, 4, 5) or (kind == 2 and length != 4) or (kind == 5 and length != 0):
+    if kind not in (1, 2, 3, 4, 5, 6) or (kind == 2 and length != 4) or (kind == 5 and length != 0) or (kind == 6 and length > 1024):
         raise ValueError('invalid input frame')
     if len(buffer) < 5 + length:
         return None
@@ -87,6 +94,125 @@ class ImageUpload:
         self.directory.cleanup()
 
 
+MAX_DIRECTORY = 2 * 1024 * 1024
+
+
+def write_output(kind, body):
+    view = memoryview(struct.pack('>BI', kind, len(body)) + body)
+    while view:
+        view = view[os.write(1, view):]
+
+
+class ApiRejected(ValueError):
+    pass
+
+
+def herdr_request(method, params):
+    # Match the default session launched below, not an inherited pane's socket.
+    path = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'herdr/herdr.sock'
+    deadline = time.monotonic() + 2
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(2)
+        connection.connect(str(path))
+        connection.sendall(json.dumps({'id': 'sshepherd', 'method': method, 'params': params}).encode() + b'\n')
+        data = bytearray()
+        while b'\n' not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            connection.settimeout(remaining)
+            chunk = connection.recv(65536)
+            if not chunk:
+                raise ValueError('incomplete API response')
+            data.extend(chunk)
+            if len(data) > MAX_DIRECTORY:
+                raise ValueError('oversized API response')
+    response = json.loads(data.split(b'\n', 1)[0])
+    if 'error' in response:
+        raise ApiRejected('Herdr API rejected request')
+    if not isinstance(response.get('result'), dict):
+        raise ValueError('Invalid Herdr API response')
+    return response['result']
+
+
+def directory_request(body):
+    request = json.loads(body)
+    request_id = request.get('id')
+    if not isinstance(request_id, str) or not 1 <= len(request_id) <= 64:
+        raise ValueError('invalid request ID')
+    reply = {'id': request_id, 'error': ''}
+    focus_submitted = False
+    try:
+        action = request.get('action')
+        if action == 'list':
+            snapshot = herdr_request('session.snapshot', {})['snapshot']
+            for name, limit, fields in (
+                ('workspaces', 512, ('workspace_id', 'label', 'agent_status', 'pane_count', 'tab_count')),
+                ('agents', 4096, ('workspace_id', 'pane_id', 'tab_id', 'name', 'agent', 'display_agent',
+                                  'title', 'terminal_title_stripped', 'agent_status')),
+            ):
+                rows = snapshot[name]
+                if not isinstance(rows, list) or len(rows) > limit or any(not isinstance(row, dict) for row in rows):
+                    raise ValueError('invalid directory')
+                # Explicit metadata allowlist: no terminal buffers, credentials,
+                # arbitrary token maps or agent session payloads reach the UI.
+                reply[name] = [{key: (row[key][:512] if isinstance(row[key], str) else row[key])
+                                for key in fields if key in row and isinstance(row[key], (str, int))}
+                               for row in rows]
+        elif action in ('workspace', 'pane'):
+            key = action + '_id'
+            target = request.get(key)
+            if not isinstance(target, str) or not 1 <= len(target) <= 128 or any(ord(c) < 32 for c in target):
+                raise ValueError('invalid target')
+            focus_submitted = True
+            herdr_request(action + '.focus', {key: target})
+            reply['selected'] = True
+        else:
+            raise ValueError('unsupported action')
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as error:
+        reply = {'id': request_id, 'error': 'Herdr workspace API unavailable or selection no longer exists. Refresh and retry.',
+                 'uncertain': focus_submitted and not isinstance(error, ApiRejected)}
+    payload = json.dumps(reply).encode()
+    if len(payload) > MAX_DIRECTORY:
+        payload = json.dumps({'id': request_id, 'error': 'Workspace list is too large.'}).encode()
+    return payload
+
+
+class DirectoryWorker:
+    """One bounded API request at a time; a slow socket never blocks the PTY."""
+    def __init__(self):
+        self.reader, self.writer = socket.socketpair()
+        self.result = queue.Queue(maxsize=1)
+        self.busy = False
+
+    def submit(self, body):
+        if self.busy:
+            request_id = json.loads(body).get('id', '')
+            return json.dumps({'id': request_id, 'error': 'Workspace request already in progress.'}).encode()
+        self.busy = True
+        def work():
+            try:
+                payload = directory_request(body)
+            except (ValueError, TypeError, AttributeError, RecursionError):
+                payload = b'{"id":"","error":"Invalid workspace request."}'
+            self.result.put(payload)
+            try:
+                self.writer.sendall(b'1')
+            except OSError:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+        return None
+
+    def receive(self):
+        self.reader.recv(1)
+        self.busy = False
+        return self.result.get_nowait()
+
+    def close(self):
+        self.reader.close()
+        self.writer.close()
+
+
 def main():
     # Wait for the phone's geometry before starting Herdr, avoiding a 0x0 PTY.
     buffer = bytearray()
@@ -110,14 +236,18 @@ def main():
         os.environ['HERDR_REMOTE_KEYBINDINGS'] = 'server'
         os.execvp('herdr', ['herdr', '--session', 'default'])
     pending = bytearray()
+    deferred_focus = None
+    focus_deadline = None
     images = ImageUpload()
+    directory = DirectoryWorker()
     os.set_blocking(master, False)
     selector = selectors.DefaultSelector()
     selector.register(0, selectors.EVENT_READ)
     selector.register(master, selectors.EVENT_READ)
+    selector.register(directory.reader, selectors.EVENT_READ)
     try:
         while True:
-            while True:
+            while deferred_focus is None:
                 parsed = pop_frame(buffer)
                 if parsed is None:
                     break
@@ -128,19 +258,44 @@ def main():
                         raise ValueError('PTY input backlog full')
                 elif kind == 2:
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size(body))
+                elif kind == 6:
+                    request = json.loads(body)
+                    if request.get('action') in ('workspace', 'pane') and pending:
+                        # Do not let a separate API socket overtake earlier
+                        # keyboard/composition bytes waiting for the PTY.
+                        deferred_focus = body
+                        focus_deadline = time.monotonic() + 2
+                    else:
+                        reply = directory.submit(body)
+                        if reply is not None:
+                            write_output(2, reply)
                 else:
                     drop = images.frame(kind, body)
                     if drop:
                         pending.extend(drop)
                         if len(pending) > 1024 * 1024:
                             raise ValueError('PTY input backlog full')
+            if deferred_focus is not None:
+                if not pending:
+                    reply = directory.submit(deferred_focus)
+                    if reply is not None:
+                        write_output(2, reply)
+                    deferred_focus = None
+                elif time.monotonic() >= focus_deadline:
+                    request_id = json.loads(deferred_focus)['id']
+                    write_output(2, json.dumps({'id': request_id, 'error': 'Terminal input is still pending; selection was not applied.'}).encode())
+                    deferred_focus = None
             selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0))
-            for key, events in selector.select():
+            for key, events in selector.select(.1 if deferred_focus is not None else None):
                 if key.fd == 0:
                     chunk = os.read(0, 65536)
                     if not chunk:
                         return
                     buffer.extend(chunk)
+                    if len(buffer) > 1024 * 1024:
+                        raise ValueError('input backlog full')
+                elif key.fileobj is directory.reader:
+                    write_output(2, directory.receive())
                 else:
                     if events & selectors.EVENT_READ:
                         try:
@@ -151,10 +306,9 @@ def main():
                             raise
                         if not output:
                             return
-                        # stdout is a pipe, not the PTY; preserve every output byte.
-                        view = memoryview(output)
-                        while view:
-                            view = view[os.write(1, view):]
+                        # Frame VT separately so terminal escape sequences cannot
+                        # impersonate native workspace responses.
+                        write_output(1, output)
                     if events & selectors.EVENT_WRITE and pending:
                         del pending[:os.write(master, pending)]
     finally:
@@ -166,6 +320,7 @@ def main():
             pass
         os.waitpid(pid, 0)
         images.close()
+        directory.close()
 
 
 if __name__ == '__main__':

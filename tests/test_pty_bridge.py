@@ -1,4 +1,10 @@
 import importlib.util
+from contextlib import ExitStack
+from types import SimpleNamespace
+import json
+import socket
+import threading
+from unittest.mock import patch
 import os
 from pathlib import Path
 import select
@@ -19,6 +25,22 @@ def frame(kind, data):
     return struct.pack('>BI', kind, len(data)) + data
 
 
+class OutputFrames:
+    def __init__(self):
+        self.buffer = bytearray()
+    def push(self, chunk):
+        self.buffer.extend(chunk)
+        records = []
+        while len(self.buffer) >= 5:
+            kind, length = struct.unpack('>BI', self.buffer[:5])
+            if kind not in (1, 2) or length > bridge.MAX_DIRECTORY:
+                raise ValueError('invalid output frame')
+            if len(self.buffer) < 5 + length: break
+            records.append((kind, bytes(self.buffer[5:5 + length])))
+            del self.buffer[:5 + length]
+        return records
+
+
 class Framing(unittest.TestCase):
     def test_fragmentation_and_coalescing(self):
         wire = frame(1, '🐑\x03'.encode()) + frame(2, struct.pack('>HH', 80, 24))
@@ -31,6 +53,117 @@ class Framing(unittest.TestCase):
                 frames.append(parsed)
         self.assertEqual(frames, [(1, '🐑\x03'.encode()), (2, struct.pack('>HH', 80, 24))])
         self.assertEqual(buffer, b'')
+
+    def test_directory_frames_are_bounded(self):
+        payload = b'{"id":"test","action":"list"}'
+        self.assertEqual(bridge.pop_frame(bytearray(frame(6, payload))), (6, payload))
+        with self.assertRaises(ValueError): bridge.pop_frame(bytearray(frame(6, b'x' * 1025)))
+
+    def test_directory_filters_sensitive_payloads_and_only_allows_focus(self):
+        state = {'workspaces': [{'workspace_id': 'w1', 'label': 'Project', 'tokens': {'secret': 'hidden'}}],
+                 'agents': [{'workspace_id': 'w1', 'pane_id': 'w1:p1', 'agent': 'pi', 'title': 'Task',
+                             'terminal_content': 'do not forward', 'agent_session': {'secret': 'hidden'}}]}
+        with patch.object(bridge, 'herdr_request', return_value={'snapshot': state}) as rpc:
+            response = json.loads(bridge.directory_request(b'{"id":"r1","action":"list"}'))
+            rpc.assert_called_once_with('session.snapshot', {})
+        self.assertEqual(response['workspaces'], [{'workspace_id': 'w1', 'label': 'Project'}])
+        self.assertEqual(response['agents'][0]['title'], 'Task')
+        self.assertNotIn('secret', json.dumps(response))
+        self.assertNotIn('terminal_content', json.dumps(response))
+        for action, target in [('workspace', 'w1'), ('pane', 'w1:p2')]:
+            with patch.object(bridge, 'herdr_request', return_value={}) as rpc:
+                request = json.dumps({'id': 'r2', 'action': action, action + '_id': target}).encode()
+                self.assertTrue(json.loads(bridge.directory_request(request))['selected'])
+                rpc.assert_called_once_with(action + '.focus', {action + '_id': target})
+        with patch.object(bridge, 'herdr_request') as rpc:
+            response = json.loads(bridge.directory_request(b'{"id":"bad","action":"pane.close"}'))
+            self.assertTrue(response['error']); rpc.assert_not_called()
+
+    def test_focus_waits_for_all_preceding_partial_pty_writes(self):
+        payload = b'queued composition'
+        initial = frame(2, struct.pack('>HH', 80, 24)) + frame(1, payload) + frame(6, b'{"id":"focus","action":"workspace","workspace_id":"w2"}')
+        reads = iter((initial, b''))
+        written = bytearray()
+        outputs = bytearray()
+        class Selector:
+            def register(self, *args): pass
+            def modify(self, *args): pass
+            def close(self): pass
+            def select(self, timeout=None):
+                fd = 9 if len(written) < len(payload) else 0
+                return [(SimpleNamespace(fd=fd, fileobj=fd), bridge.selectors.EVENT_WRITE if fd else bridge.selectors.EVENT_READ)]
+        def write(fd, data):
+            if fd == 9:
+                count = min(2, len(data)); written.extend(data[:count]); return count
+            outputs.extend(data); return len(data)
+        def submit(body):
+            self.assertEqual(bytes(written), payload)
+            return b'{"id":"focus","selected":true,"error":""}'
+        with ExitStack() as stack:
+            worker = stack.enter_context(patch.object(bridge, 'DirectoryWorker')).return_value
+            worker.submit.side_effect = submit
+            stack.enter_context(patch.object(bridge, 'ImageUpload'))
+            stack.enter_context(patch.object(bridge.pty, 'fork', return_value=(12345, 9)))
+            stack.enter_context(patch.object(bridge.os, 'read', side_effect=lambda fd, n: next(reads)))
+            stack.enter_context(patch.object(bridge.os, 'write', side_effect=write))
+            for name in ('set_blocking', 'close', 'kill', 'waitpid'):
+                stack.enter_context(patch.object(bridge.os, name))
+            stack.enter_context(patch.object(bridge.selectors, 'DefaultSelector', return_value=Selector()))
+            bridge.main()
+            worker.submit.assert_called_once()
+        replies = OutputFrames().push(outputs)
+        self.assertTrue(json.loads(replies[0][1])['selected'])
+
+    def test_focus_timeout_is_distinguished_from_explicit_rejection(self):
+        body = b'{"id":"focus","action":"workspace","workspace_id":"w2"}'
+        with patch.object(bridge, 'herdr_request', side_effect=TimeoutError()):
+            response = json.loads(bridge.directory_request(body))
+            self.assertTrue(response['uncertain']); self.assertTrue(response['error'])
+        with patch.object(bridge, 'herdr_request', side_effect=bridge.ApiRejected()):
+            response = json.loads(bridge.directory_request(body))
+            self.assertFalse(response['uncertain']); self.assertTrue(response['error'])
+
+    def test_directory_errors_do_not_escape_into_terminal_and_worker_is_bounded(self):
+        worker = bridge.DirectoryWorker()
+        release = threading.Event()
+        entered = threading.Event()
+        def slow(body):
+            entered.set(); release.wait(3)
+            return b'{"id":"r1","error":""}'
+        try:
+            with patch.object(bridge, 'directory_request', side_effect=slow):
+                self.assertIsNone(worker.submit(b'{"id":"r1","action":"list"}'))
+                self.assertTrue(entered.wait(1))
+                busy = json.loads(worker.submit(b'{"id":"r2","action":"list"}'))
+                self.assertEqual(busy['id'], 'r2'); self.assertTrue(busy['error'])
+                release.set()
+                self.assertTrue(select.select([worker.reader], [], [], 2)[0])
+                self.assertEqual(json.loads(worker.receive())['id'], 'r1')
+                self.assertFalse(worker.busy)
+        finally:
+            release.set(); worker.close()
+        with patch.object(bridge, 'herdr_request', side_effect=TimeoutError()):
+            self.assertTrue(json.loads(bridge.directory_request(b'{"id":"r3","action":"list"}'))['error'])
+
+    def test_socket_api_fragmentation_and_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / 'herdr'; folder.mkdir()
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(folder / 'herdr.sock')); server.listen(1)
+            def serve():
+                connection, _ = server.accept()
+                with connection:
+                    request = bytearray()
+                    while b'\n' not in request: request.extend(connection.recv(1000))
+                    self.assertEqual(json.loads(request)['method'], 'session.snapshot')
+                    connection.sendall(b'{"result":')
+                    connection.sendall(b'{"snapshot":{}}}\n')
+            thread = threading.Thread(target=serve); thread.start()
+            try:
+                with patch.dict(os.environ, {'XDG_CONFIG_HOME': directory, 'HERDR_SOCKET_PATH': '/not/the/default'}):
+                    self.assertEqual(bridge.herdr_request('session.snapshot', {}), {'snapshot': {}})
+            finally:
+                thread.join(3); server.close()
 
     def test_invalid_frames(self):
         for data in (struct.pack('>BI', 1, 65537), frame(9, b''), frame(2, b'x')):
@@ -94,6 +227,7 @@ while True:
             env = {**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH']}
             proc = subprocess.Popen([sys.executable, '-u', str(BRIDGE)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
             output = bytearray()
+            decoder = OutputFrames()
 
             def expect(value):
                 deadline = time.monotonic() + 5
@@ -104,7 +238,9 @@ while True:
                         chunk = os.read(proc.stdout.fileno(), 65536)
                         if not chunk:
                             self.fail(f'bridge exited: {proc.stderr.read()!r}')
-                        output.extend(chunk)
+                        for kind, body in decoder.push(chunk):
+                            self.assertEqual(kind, 1)
+                            output.extend(body)
             try:
                 proc.stdin.write(frame(2, struct.pack('>HH', 80, 24)))
                 proc.stdin.flush()

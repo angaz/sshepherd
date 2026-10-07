@@ -15,6 +15,30 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class MainActivityTest {
     private fun children(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { children(view.getChildAt(it)) } else emptyList()
+    @Test fun closingPickerOrUncertainReplyKeepsSelectionGuardUntilConfirmation() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun call(name: String, value: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }.invoke(activity, value)
+        val request = field("workspaceRequest")
+        val selecting = field("workspaceSelecting")
+        request.set(activity, "pick"); selecting.setBoolean(activity, true)
+        call("workspaceDialogClosed", null)
+        assertEquals("pick", request.get(activity)); assertTrue(selecting.getBoolean(activity))
+        call("receiveWorkspaces", """{"id":"old","selected":true}""")
+        assertTrue(selecting.getBoolean(activity))
+        call("receiveWorkspaces", """{"id":"pick","error":"Timed out","uncertain":true}""")
+        assertEquals("pick", request.get(activity)); assertTrue(selecting.getBoolean(activity))
+        call("receiveWorkspaces", """{"id":"pick"}""")
+        assertEquals("pick", request.get(activity)); assertTrue(selecting.getBoolean(activity))
+        call("receiveWorkspaces", """{"id":"pick","selected":true}""")
+        assertNull(request.get(activity)); assertFalse(selecting.getBoolean(activity))
+        request.set(activity, "list")
+        call("workspaceDialogClosed", null)
+        assertNull(request.get(activity))
+        controller.pause().stop().destroy()
+    }
     @Test fun suppliedAdaptiveLauncherIconsLoad() {
         val app = org.robolectric.RuntimeEnvironment.getApplication()
         assertTrue(app.applicationInfo.icon in listOf(R.mipmap.ic_launcher, R.mipmap.ic_launcher_round))

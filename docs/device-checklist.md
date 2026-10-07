@@ -10,6 +10,7 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Test Gboard and the preferred IME: suggestions, swipe typing, committed text, composition, Unicode/emoji, backspace at an empty local editor, Enter while composing, cancellation and paste. Commands must not be automatically capitalized.
 - [ ] Take a screenshot and inspect the app-switcher preview: terminal/UI content should be visible, not blank.
 - [ ] Test physical keyboard: Ctrl+C, Alt terminal shortcuts, AltGr/layout characters, dead keys, Shift+Tab, arrows in normal/application modes and Kitty-aware apps.
+- [ ] Open Workspaces with the keyboard showing: IME closes, native rows scroll by touch, agents appear beneath their workspaces with status, Refresh preserves scroll when possible, and selection switches to the intended workspace/pane. Verify the documented cross-client focus effect. Dismiss without selecting and confirm focus is unchanged; reconnect/timeout errors must not leave stale selectable rows.
 - [ ] Show/hide IME and rotate: terminal fits between native navigation/accessory rows; remote geometry updates even after input backpressure.
 - [ ] Verify bold/italic/underline, RGB/palette colours, combining marks, CJK/emoji wide cells, cursor, alternate screen, full-screen TUI repaint.
 - [ ] Use Attach with a UTF-8 text file and verify contents paste after confirmation, not a path. Cancel without sending anything.

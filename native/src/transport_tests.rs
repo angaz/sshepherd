@@ -62,6 +62,12 @@ fn server() -> quinn::Endpoint {
     quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap()
 }
 
+fn vt_frame(data: &[u8]) -> Vec<u8> {
+    let mut wire = vec![1];
+    wire.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    wire.extend_from_slice(data); wire
+}
+
 #[tokio::test]
 async fn real_quic_resume_deduplicates_output_and_replays_unacked_input() {
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -76,8 +82,9 @@ async fn real_quic_resume_deduplicates_output_and_replays_unacked_input() {
             let stdin: Msg = peer.recv().await;
             let Msg::Stdin { seq: 1, data } = stdin else { panic!("expected first stdin"); };
             assert_eq!(data, b"fixture-input");
-            // Deliberately withhold the stdin ACK, but send one output frame.
-            peer.send(&Msg::Stdout { seq: 1, data: b"first".to_vec() }).await;
+            // Withhold stdin ACK and interrupt mid bridge frame. Its decoder
+            // must preserve partial bytes while Eternal deduplicates replay.
+            peer.send(&Msg::Stdout { seq: 1, data: vt_frame(b"first")[..7].to_vec() }).await;
             let ack: Msg = peer.recv().await;
             assert!(matches!(ack, Msg::Ack { seq: 1 }));
             peer.conn.close(0u32.into(), b"simulated roaming");
@@ -89,8 +96,8 @@ async fn real_quic_resume_deduplicates_output_and_replays_unacked_input() {
             let resent: Msg = peer.recv().await;
             assert!(matches!(resent, Msg::Stdin { seq: 1, ref data } if data == b"fixture-input"));
             peer.send(&Msg::Ack { seq: 1 }).await;
-            peer.send(&Msg::Stdout { seq: 1, data: b"first".to_vec() }).await;
-            peer.send(&Msg::Stdout { seq: 2, data: b"second".to_vec() }).await;
+            peer.send(&Msg::Stdout { seq: 1, data: vt_frame(b"first")[..7].to_vec() }).await;
+            peer.send(&Msg::Stdout { seq: 2, data: [vt_frame(b"first")[7..].to_vec(), vt_frame(b"second")].concat() }).await;
             for _ in 0..2 { let _: Msg = peer.recv().await; }
             peer.send(&Msg::Exit { seq: 3, code: 0 }).await;
             let ack: Msg = peer.recv().await;
@@ -108,6 +115,7 @@ async fn real_quic_resume_deduplicates_output_and_replays_unacked_input() {
             match event {
                 Event::Output { data } => bytes.extend(STANDARD.decode(data).unwrap()),
                 Event::Status { phase, .. } => phases.push(phase),
+                Event::Directory { .. } => panic!("unexpected directory response"),
             }
         }
         assert_eq!(bytes, b"firstsecond");
@@ -132,7 +140,7 @@ async fn denied_resume_is_terminal_not_a_new_exec() {
             .await;
             peer.send(&Msg::Stdout {
                 seq: 1,
-                data: b"ready".to_vec(),
+                data: vt_frame(b"ready"),
             })
             .await;
             let _: Msg = peer.recv().await;
@@ -176,7 +184,7 @@ async fn explicit_close_drains_active_output_and_sends_eof_without_resume() {
             .await;
             peer.send(&Msg::Stdout {
                 seq: 1,
-                data: vec![b'x'; 1024],
+                data: vt_frame(&vec![b'x'; 1024]),
             })
             .await;
             let _ = ready_tx.send(());

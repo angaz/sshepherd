@@ -2,6 +2,7 @@
 SSHEPHERD_TEST_HERDR=/absolute/path/to/herdr python3 -m unittest discover -s tests -v
 """
 import base64
+import json
 import os
 from pathlib import Path
 import select
@@ -12,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from test_pty_bridge import BRIDGE, frame
+from test_pty_bridge import BRIDGE, frame, OutputFrames
 
 
 @unittest.skipUnless(os.environ.get('SSHEPHERD_TEST_HERDR'), 'real Herdr binary not requested')
@@ -54,13 +55,31 @@ with open(os.environ['FIXTURE_CAPTURE'], 'ab', buffering=0) as out:
                 proc.stdin.write(frame(2, struct.pack('>HH', 80, 24))); proc.stdin.flush()
                 deadline = time.monotonic() + 20
                 uploaded = False
+                queried = False
+                focused = False
+                decoder = OutputFrames()
                 rendered = bytearray()
                 while time.monotonic() < deadline:
                     if select.select([proc.stdout], [], [], .05)[0]:
                         chunk = os.read(proc.stdout.fileno(), 65536)
                         if not chunk: self.fail('Herdr fixture exited: ' + proc.stderr.read().decode(errors='replace'))
-                        rendered.extend(chunk)
-                    if not uploaded and b'FIXTURE_READY' in rendered:
+                        for kind, body in decoder.push(chunk):
+                            if kind == 1:
+                                rendered.extend(body)
+                            else:
+                                response = json.loads(body)
+                                self.assertEqual(response['error'], '')
+                                if response['id'] == 'list':
+                                    self.assertTrue(response['workspaces'])
+                                    target = response['workspaces'][0]['workspace_id']
+                                    proc.stdin.write(frame(6, json.dumps({'id': 'focus', 'action': 'workspace', 'workspace_id': target}).encode()))
+                                    proc.stdin.flush()
+                                elif response['id'] == 'focus':
+                                    self.assertTrue(response['selected']); focused = True
+                    if not queried and b'FIXTURE_READY' in rendered:
+                        proc.stdin.write(frame(6, b'{"id":"list","action":"list"}'))
+                        proc.stdin.flush(); queried = True
+                    if not uploaded and focused:
                         proc.stdin.write(frame(3, struct.pack('>I', len(image)) + b'png') + frame(4, image) + frame(5, b''))
                         proc.stdin.flush(); uploaded = True
                     if received.exists() and b'herdr-clipboard-images-' in received.read_bytes():

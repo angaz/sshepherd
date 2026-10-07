@@ -1,4 +1,5 @@
 pub mod transport;
+mod bridge_output;
 
 /// Drain the bounded UI queue during explicit detach, so output cannot cause
 /// a reconnect before the closed input channel is observed and EOF is sent.
