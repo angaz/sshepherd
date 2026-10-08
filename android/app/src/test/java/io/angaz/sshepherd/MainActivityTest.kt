@@ -15,16 +15,16 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class MainActivityTest {
     private fun children(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { children(view.getChildAt(it)) } else emptyList()
-    @Test fun closingPickerOrUncertainReplyKeepsSelectionGuardUntilConfirmation() {
+    @Test fun leavingScreenOrUncertainReplyKeepsSelectionGuardUntilConfirmation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
-        fun call(name: String, value: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
-            .apply { isAccessible = true }.invoke(activity, value)
+        fun call(name: String, vararg args: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }.invoke(activity, *args)
         val request = field("workspaceRequest")
         val selecting = field("workspaceSelecting")
         request.set(activity, "pick"); selecting.setBoolean(activity, true)
-        call("workspaceDialogClosed", null)
+        call("closeWorkspaces")
         assertEquals("pick", request.get(activity)); assertTrue(selecting.getBoolean(activity))
         call("receiveWorkspaces", """{"id":"old","selected":true}""")
         assertTrue(selecting.getBoolean(activity))
@@ -35,8 +35,36 @@ class MainActivityTest {
         call("receiveWorkspaces", """{"id":"pick","selected":true}""")
         assertNull(request.get(activity)); assertFalse(selecting.getBoolean(activity))
         request.set(activity, "list")
-        call("workspaceDialogClosed", null)
+        call("closeWorkspaces")
         assertNull(request.get(activity))
+        controller.pause().stop().destroy()
+    }
+    @Test fun fullScreenNavigationHidesImeKeepsSceneMountedAndBackRestoresIt() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        val root = field("root").get(activity) as android.widget.FrameLayout
+        val scene = root.getChildAt(0) as ViewGroup
+        field("terminalContent").set(activity, scene)
+        val editor = android.widget.EditText(activity)
+        scene.addView(editor); editor.requestFocus()
+        val ime = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        ime.showSoftInput(editor, 0)
+        assertTrue(org.robolectric.Shadows.shadowOf(ime).isSoftInputVisible)
+        val screen = WorkspaceScreen(activity, {}, {}, { activity.onBackPressedDispatcher.onBackPressed() })
+        MainActivity::class.java.getDeclaredMethod("openWorkspaceScreen", WorkspaceScreen::class.java)
+            .apply { isAccessible = true }.invoke(activity, screen)
+        assertSame(root, scene.parent)
+        assertEquals(View.INVISIBLE, scene.visibility)
+        assertSame(root, screen.parent)
+        assertEquals(-1, screen.layoutParams.width); assertEquals(-1, screen.layoutParams.height)
+        assertFalse(org.robolectric.Shadows.shadowOf(ime).isSoftInputVisible)
+        activity.onBackPressedDispatcher.onBackPressed()
+        assertNull(screen.parent)
+        assertSame(root, scene.parent)
+        assertEquals(View.VISIBLE, scene.visibility)
+        assertNull(field("workspaceScreen").get(activity))
+        assertFalse(org.robolectric.Shadows.shadowOf(ime).isSoftInputVisible)
         controller.pause().stop().destroy()
     }
     @Test fun suppliedAdaptiveLauncherIconsLoad() {

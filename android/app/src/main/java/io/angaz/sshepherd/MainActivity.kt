@@ -36,7 +36,8 @@ class MainActivity : AppCompatActivity() {
     private var terminal: TerminalView? = null
     private var notice: TextView? = null
     private var controls: TerminalControls? = null
-    private var workspaceDialog: WorkspaceDialog? = null
+    private var terminalContent: View? = null
+    private var workspaceScreen: WorkspaceScreen? = null
     private var workspaceRequest: String? = null
     private var workspaceSelecting = false
     private var workspaceTimeout: Runnable? = null
@@ -101,7 +102,8 @@ class MainActivity : AppCompatActivity() {
         setTitleTextColor(0xffe6edf3.toInt()); setSubtitleTextColor(0xffb5c5cd.toInt())
     }
     private fun navigateBack() {
-        if (controls?.expanded == true) controls?.setExpanded(false)
+        if (workspaceScreen != null) closeWorkspaces()
+        else if (controls?.expanded == true) controls?.setExpanded(false)
         else if (activeHost != null) showServers() else finish()
     }
     private fun showServers() {
@@ -109,6 +111,7 @@ class MainActivity : AppCompatActivity() {
         activeHost = null
         terminal?.let { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken, 0); it.close() }
         terminal = null
+        terminalContent = null
         controls = null
         root.removeAllViews()
         hosts = hostStore.read()
@@ -207,6 +210,7 @@ class MainActivity : AppCompatActivity() {
     private fun showTerminal(host: HostEntry) {
         root.removeAllViews()
         val content = column()
+        terminalContent = content
         val view = TerminalView(this)
         terminal = view
         activeHost = host
@@ -291,7 +295,7 @@ class MainActivity : AppCompatActivity() {
         view.onClipboard = { bytes ->
             // Drain but discard background/stale-session requests. Remote output
             // must not replace the phone clipboard when this app isn't active.
-            if (!away && !destroyed && hasWindowFocus() && view === terminal && phase == "connected") {
+            if (!away && !destroyed && hasWindowFocus() && view.isShown && view === terminal && phase == "connected") {
                 if (!RemoteClipboard.write(this, bytes)) setNotice("Could not copy remote text to the phone clipboard.", true)
             }
         }
@@ -305,44 +309,58 @@ class MainActivity : AppCompatActivity() {
     private fun showWorkspaces(view: TerminalView) {
         // Commit pre-edit before hiding the IME; opening this native list never
         // sends Ctrl+A/W or opens the terminal-rendered sidebar.
+        if (workspaceScreen != null) return
         view.prepareContent()
-        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(view.windowToken, 0)
-        view.clearFocus()
-        if (workspaceDialog != null) return
         val id = session
-        workspaceDialog = WorkspaceDialog(this, refresh = { requestWorkspaces(JSONObject().put("action", "list")) }, select = { row ->
-            if (session != id || view !== terminal || imageTransfer != null || !view.prepareContent()) {
-                workspaceDialog?.error("Cannot switch while disconnected or sending content.")
+        openWorkspaceScreen(WorkspaceScreen(this, refresh = { requestWorkspaces(JSONObject().put("action", "list")) }, select = { row ->
+            // Pre-edit was committed before opening, and terminal input stays
+            // disabled while browsing this screen.
+            if (session != id || view !== terminal || imageTransfer != null || phase != "connected") {
+                workspaceScreen?.error("Cannot switch while disconnected or sending content.")
             } else {
                 requestWorkspaces(JSONObject().put("action", if (row.isAgent) "pane" else "workspace")
                     .put(if (row.isAgent) "pane_id" else "workspace_id", row.id))
             }
-        }, closed = { workspaceDialogClosed(view) }).also { it.show() }
-        if (workspaceSelecting) workspaceDialog?.loading("Waiting for the switch to be confirmed…")
+        }, back = ::closeWorkspaces))
+        if (workspaceSelecting) workspaceScreen?.loading("Waiting for the switch to be confirmed…")
         else requestWorkspaces(JSONObject().put("action", "list"))
     }
-    private fun workspaceDialogClosed(view: TerminalView?) {
-        workspaceDialog = null
-        // A submitted focus RPC cannot be cancelled by closing its dialog.
-        // Retain its ID and input guard until remote confirmation arrives.
+    private fun openWorkspaceScreen(screen: WorkspaceScreen) {
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
+        terminal?.clearFocus(); terminal?.acceptingInput = false
+        // Keep the connected terminal mounted with stable geometry, but remove
+        // it and its shortcut bar from touch/focus/accessibility navigation.
+        terminalContent?.visibility = View.INVISIBLE
+        workspaceScreen = screen
+        root.addView(screen, FrameLayout.LayoutParams(-1, -1))
+        screen.requestFocus()
+    }
+    private fun closeWorkspaces() {
+        workspaceScreen?.let { root.removeView(it) }
+        workspaceScreen = null
+        terminalContent?.visibility = View.VISIBLE
+        // Navigating back cannot cancel a submitted focus RPC. Retain its ID
+        // and input guard until confirmation, just as while browsing.
         if (!workspaceSelecting) {
             clearWorkspaceRequest()
-            if (view === terminal) view?.requestFocus()
+            terminal?.acceptingInput = phase == "connected" && imageTransfer == null
+            terminal?.requestFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
         }
     }
     private fun requestWorkspaces(request: JSONObject) {
-        val dialog = workspaceDialog ?: return
+        val screen = workspaceScreen ?: return
         if (workspaceRequest != null) return
-        if (phase != "connected") { dialog.error("Not connected. Reconnect and open the list again."); return }
+        if (phase != "connected") { screen.error("Not connected. Reconnect and open the list again."); return }
         val id = java.util.UUID.randomUUID().toString()
         request.put("id", id)
         workspaceRequest = id
         workspaceSelecting = request.getString("action") != "list"
         if (workspaceSelecting) terminal?.acceptingInput = false
-        dialog.loading(if (!workspaceSelecting) "Loading workspaces…" else "Switching…")
+        screen.loading(if (!workspaceSelecting) "Loading workspaces…" else "Switching…")
         if (!enqueueFrame(PtyFrames.directory(request))) {
             clearWorkspaceRequest(); finishWorkspaceSelection()
-            dialog.error("Input queue full. Try refreshing."); return
+            screen.error("Input queue full. Try refreshing."); return
         }
         workspaceTimeout = Runnable {
             if (workspaceRequest == id) {
@@ -350,18 +368,18 @@ class MainActivity : AppCompatActivity() {
                     // A network timeout does not prove a focus mutation failed.
                     // Never resume typing into an unconfirmed target.
                     workspaceTimeout = null
-                    workspaceDialog?.loading("Switch not confirmed. Input remains paused; reconnect if needed.")
+                    workspaceScreen?.loading("Switch not confirmed. Input remains paused; reconnect if needed.")
                     setNotice("Switch not confirmed. Input paused; return to Servers to reconnect.", true)
                 } else {
-                    clearWorkspaceRequest(); workspaceDialog?.error("Workspace request timed out. Refresh to retry.")
+                    clearWorkspaceRequest(); workspaceScreen?.error("Workspace request timed out. Refresh to retry.")
                 }
             }
         }.also { handler.postDelayed(it, 8000) }
     }
     private fun finishWorkspaceSelection() {
         workspaceSelecting = false
-        terminal?.acceptingInput = phase == "connected" && imageTransfer == null
-        if (workspaceDialog == null) terminal?.requestFocus()
+        terminal?.acceptingInput = phase == "connected" && imageTransfer == null && workspaceScreen == null
+        if (workspaceScreen == null) terminal?.requestFocus()
     }
     private fun receiveWorkspaces(data: String) {
         try {
@@ -370,7 +388,7 @@ class MainActivity : AppCompatActivity() {
             val error = response.optString("error")
             if (workspaceSelecting && response.optBoolean("uncertain")) {
                 workspaceTimeout?.let { handler.removeCallbacks(it) }; workspaceTimeout = null
-                workspaceDialog?.loading("Switch may have been applied. Input paused; reconnect to continue.")
+                workspaceScreen?.loading("Switch may have been applied. Input paused; reconnect to continue.")
                 setNotice("Switch may have been applied. Input paused; return to Servers to reconnect.", true)
                 return
             }
@@ -380,13 +398,13 @@ class MainActivity : AppCompatActivity() {
             finishWorkspaceSelection()
             if (wasSelecting && phase == "connected") setNotice(if (error.isEmpty()) "Connected" else error.take(512), error.isNotEmpty())
             when {
-                error.isNotEmpty() -> workspaceDialog?.error(error.take(512))
-                response.optBoolean("selected") -> workspaceDialog?.dismiss()
-                else -> workspaceDialog?.display(WorkspaceDirectory.rows(response))
+                error.isNotEmpty() -> workspaceScreen?.error(error.take(512))
+                response.optBoolean("selected") -> closeWorkspaces()
+                else -> workspaceScreen?.display(WorkspaceDirectory.rows(response))
             }
         } catch (_: Exception) {
-            if (workspaceSelecting) workspaceDialog?.loading("Invalid switch confirmation. Input paused; reconnect to continue.")
-            else { clearWorkspaceRequest(); workspaceDialog?.error("Invalid workspace list. Refresh to retry.") }
+            if (workspaceSelecting) workspaceScreen?.loading("Invalid switch confirmation. Input paused; reconnect to continue.")
+            else { clearWorkspaceRequest(); workspaceScreen?.error("Invalid workspace list. Refresh to retry.") }
         }
     }
     @Deprecated("Legacy activity result API")
@@ -519,7 +537,7 @@ class MainActivity : AppCompatActivity() {
             transfer.pump { Native.send(session, it) }
             if (transfer.done) {
                 imageTransfer = null
-                view.acceptingInput = true
+                view.acceptingInput = workspaceScreen == null && !workspaceSelecting
                 setNotice("Image queued for Herdr image paste.")
             }
         }
@@ -540,10 +558,10 @@ class MainActivity : AppCompatActivity() {
                     receiveWorkspaces(event.getString("data"))
                 } else {
                     phase = event.getString("phase")
-                    terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting
+                    terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null
                     if (phase != "connected") {
-                        if (workspaceSelecting) workspaceDialog?.loading("Connection interrupted; waiting for switch confirmation…")
-                        else { clearWorkspaceRequest(); workspaceDialog?.error("Connection interrupted. Refresh after reconnecting.") }
+                        if (workspaceSelecting) workspaceScreen?.loading("Connection interrupted; waiting for switch confirmation…")
+                        else { clearWorkspaceRequest(); workspaceScreen?.error("Connection interrupted. Refresh after reconnecting.") }
                     }
                     setNotice(if (phase == "connected" && workspaceSelecting) "Connected; waiting for workspace switch confirmation. Input paused."
                         else event.getString("message"), phase == "error")
@@ -558,9 +576,9 @@ class MainActivity : AppCompatActivity() {
         if (phase != "error" && phase != "closed") handler.postDelayed({ poll(id) }, 16)
     }
     private fun disconnect() {
-        clearWorkspaceRequest(); workspaceSelecting = false
-        workspaceDialog?.dismiss(); workspaceDialog = null
         val old = session; session = 0; phase = "idle"
+        clearWorkspaceRequest(); workspaceSelecting = false
+        closeWorkspaces()
         terminal?.acceptingInput = false
         outbound.clear(); queuedBytes = 0; resizePending = false
         cancelContentRead()
