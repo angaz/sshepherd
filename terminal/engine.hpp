@@ -19,6 +19,8 @@ public:
     std::vector<uint8_t> takeReplies();
     std::optional<std::vector<uint8_t>> takeClipboard();
     std::vector<uint8_t> key(int androidCode, int mods, int action, const std::string& utf8, int consumedMods = 0);
+    // Apple callers supply Ghostty semantic keys rather than Android key codes.
+    std::vector<uint8_t> platformKey(int ghosttyKey, int mods, int action, const std::string& utf8, int consumedMods = 0, uint32_t unshiftedCodepoint = 0);
     std::vector<uint8_t> mouse(int action, int button, double x, double y, int mods);
     bool mode(int number);
 private:

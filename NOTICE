@@ -15,4 +15,13 @@ SSHepherd uses:
 - Kotlin, Rust dependencies, Android platform and Gradle wrapper under
   their respective licenses. Robolectric and JUnit are test-only dependencies.
 
+- The iOS Swift packages resolve SwiftNIO, SwiftNIO SSH, Swift Crypto and
+  their transitive dependencies under their respective upstream licenses.
+  SwiftNIO, SwiftNIO SSH and Swift Crypto: Apache License 2.0 with Runtime
+  Library Exception. Source/license notices are included in the resolved
+  packages; review them when distributing an iOS binary.
+  Upstream: https://github.com/apple/swift-nio,
+  https://github.com/apple/swift-nio-ssh and https://github.com/apple/swift-crypto.
+  The generated iOS XCFramework uses the same pinned MIT libghostty-vt above.
+
 No Herdr binary, web rendering engine, or remote credentials are distributed.

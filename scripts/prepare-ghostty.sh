@@ -7,7 +7,11 @@ if [[ -f .deps/libghostty-vt/.sshepherd-source-$rev ]]; then exit 0; fi
 mkdir -p .deps
 archive=.deps/herdr-$rev.tar.gz
 curl --fail --location --retry 3 "https://codeload.github.com/herdrdev/herdr/tar.gz/$rev" -o "$archive"
-printf '%s  %s\n' "$sha" "$archive" | sha256sum --check
+if command -v sha256sum >/dev/null && sha256sum --version >/dev/null 2>&1; then
+  printf '%s  %s\n' "$sha" "$archive" | sha256sum -c -
+else
+  printf '%s  %s\n' "$sha" "$archive" | shasum -a 256 -c -
+fi
 mkdir -p .deps/libghostty-vt
 tar -xzf "$archive" --strip-components=3 -C .deps/libghostty-vt "herdr-$rev/vendor/libghostty-vt"
 touch ".deps/libghostty-vt/.sshepherd-source-$rev"
