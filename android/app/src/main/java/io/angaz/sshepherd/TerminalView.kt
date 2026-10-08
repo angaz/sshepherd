@@ -22,6 +22,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     var onGeometry: (Int, Int) -> Unit = { _, _ -> }
     var onFailure: (String) -> Unit = {}
     var onMessage: (String) -> Unit = {}
+    var onClipboard: (ByteArray) -> Unit = {}
     var acceptingInput = false
         set(value) { if (!value) connection?.discardComposition(); field = value }
     var ctrlLatched = false
@@ -68,6 +69,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     }
     fun feed(bytes: ByteArray) = safely {
         GhosttyNative.write(engine, bytes)
+        GhosttyNative.clipboard(engine)?.let { onClipboard(it) }
         flushReplies()
         dirty = true
         postInvalidateOnAnimation()

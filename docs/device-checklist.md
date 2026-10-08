@@ -14,6 +14,7 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Show/hide IME and rotate: terminal fits between native navigation/accessory rows; remote geometry updates even after input backpressure.
 - [ ] Verify bold/italic/underline, RGB/palette colours, combining marks, CJK/emoji wide cells, cursor, alternate screen, full-screen TUI repaint.
 - [ ] Use Attach with a UTF-8 text file and verify contents paste after confirmation, not a path. Cancel without sending anything.
+- [ ] Copy text remotely (Herdr copy mode, Pi `/copy`/Ctrl+X, or an OSC 52-capable tool) and paste it into another phone app. Verify Unicode/multiline text, the 60 KB limit, and that background/unfocused terminal writes do not replace the clipboard. OSC 52 read queries must not return phone clipboard contents.
 - [ ] Paste an image via clipboard URI, keyboard image insertion and Attach; verify Herdr's remote image path reaches the intended pane and the agent can read it. Confirm ≤16 MiB/image and 64 MiB/session handling.
 - [ ] Disconnect or leave the app while a content provider is reading; verify grants/streams are released and no stale upload reaches another session. Verify the 15-second provider timeout.
 - [ ] Add/edit/delete a host using a friendly name and hostname or private IP; restart the app and verify persistence. Confirm compact cards show the address on the right and Workspaces stays visible at the top.

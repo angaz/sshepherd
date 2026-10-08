@@ -9,6 +9,7 @@ object GhosttyNative {
     @JvmStatic external fun resize(id: Long, cols: Int, rows: Int, cellWidth: Int, cellHeight: Int)
     @JvmStatic external fun frame(id: Long): ByteArray
     @JvmStatic external fun replies(id: Long): ByteArray
+    @JvmStatic external fun clipboard(id: Long): ByteArray?
     @JvmStatic external fun key(id: Long, code: Int, mods: Int, consumedMods: Int, action: Int, utf8: ByteArray): ByteArray
     @JvmStatic external fun mouse(id: Long, action: Int, button: Int, x: Double, y: Double, mods: Int): ByteArray
     @JvmStatic external fun mode(id: Long, number: Int): Boolean

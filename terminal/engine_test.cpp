@@ -76,6 +76,35 @@ int main() {
         std::cout << "PASS PTY replies, key modes, Ctrl+C, mouse press/release, bracketed paste\n";
     }
     {
+        Engine engine(80, 24);
+        assert(!engine.takeClipboard());
+        const std::string copy = "\x1b]52;c;aGVsbG8=\x07";
+        for (auto c : copy) engine.write(reinterpret_cast<const uint8_t*>(&c), 1);
+        auto value = engine.takeClipboard();
+        assert(value && string(*value) == "hello");
+        assert(!engine.takeClipboard());
+        write(engine, "\x1b]52;c;d29ybGQ=\x1b\\");
+        value = engine.takeClipboard(); assert(value && string(*value) == "world");
+        write(engine, "\x1b]52;c;?\x07\x1b]52;p;?\x07");
+        assert(engine.takeReplies().empty() && !engine.takeClipboard());
+        write(engine, "\x1b]52;c;%%%\x07\x1b]52;p;aGVsbG8=\x07\x1b]52;c;\x07");
+        assert(!engine.takeClipboard()); // invalid encoding, selection, clear ignored
+        std::string encoded;
+        for (int i = 0; i < 20000; ++i) encoded += "QUFB";
+        write(engine, "\x1b]52;c;" + encoded + "\x07");
+        value = engine.takeClipboard(); assert(value && value->size() == 60000);
+        write(engine, "\x1b]52;c;" + encoded + "QQ==\x07");
+        assert(!engine.takeClipboard()); // 60001 decoded bytes rejected
+        std::string burst;
+        for (int i = 0; i < 10000; ++i) burst += copy;
+        burst += "\x1b]52;c;bGFzdA==\x07";
+        write(engine, burst);
+        value = engine.takeClipboard(); assert(value && string(*value) == "last");
+        assert(!engine.takeClipboard());
+        Engine other(80, 24); assert(!other.takeClipboard());
+        std::cout << "PASS bounded/coalesced clipboard writes, fragmentation, ST/BEL, read denial, isolation\n";
+    }
+    {
         bool rejected = false;
         try { Engine engine(0, 24); } catch (const std::invalid_argument&) { rejected = true; }
         assert(rejected);

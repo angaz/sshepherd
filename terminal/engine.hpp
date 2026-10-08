@@ -2,6 +2,7 @@
 #include <ghostty/vt.h>
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <vector>
 
 // All ownership stays on the calling thread. No Android/JNI dependency here:
@@ -16,6 +17,7 @@ public:
     void resize(int cols, int rows, int cellWidth, int cellHeight);
     std::vector<uint8_t> frame();
     std::vector<uint8_t> takeReplies();
+    std::optional<std::vector<uint8_t>> takeClipboard();
     std::vector<uint8_t> key(int androidCode, int mods, int action, const std::string& utf8, int consumedMods = 0);
     std::vector<uint8_t> mouse(int action, int button, double x, double y, int mods);
     bool mode(int number);
@@ -31,6 +33,8 @@ private:
     int cols, rows, cellWidth = 1, cellHeight = 1;
     std::vector<uint8_t> replies;
     bool replyOverflow = false;
+    std::optional<std::vector<uint8_t>> clipboard;
+    static void writeClipboard(GhosttyTerminal, void*, const GhosttyClipboardWrite*);
     void cleanup();
     static void writeReply(GhosttyTerminal, void*, const uint8_t*, size_t);
     static bool reportSize(GhosttyTerminal, void*, GhosttySizeReportSize*);

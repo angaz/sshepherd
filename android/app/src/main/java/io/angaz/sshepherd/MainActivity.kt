@@ -288,6 +288,13 @@ class MainActivity : AppCompatActivity() {
         view.onGeometry = { _, _ -> resizePending = true; flushInput() }
         view.onFailure = { message -> disconnect(); setNotice(message, true) }
         view.onMessage = { message -> setNotice(message, true) }
+        view.onClipboard = { bytes ->
+            // Drain but discard background/stale-session requests. Remote output
+            // must not replace the phone clipboard when this app isn't active.
+            if (!away && !destroyed && hasWindowFocus() && view === terminal && phase == "connected") {
+                if (!RemoteClipboard.write(this, bytes)) setNotice("Could not copy remote text to the phone clipboard.", true)
+            }
+        }
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
         view.requestFocus()
     }

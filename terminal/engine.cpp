@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+#include <cstring>
 
 namespace {
 void check(GhosttyResult result) {
@@ -76,6 +77,11 @@ Engine::Engine(int columns, int lines) : cols(columns), rows(lines) {
         check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, reinterpret_cast<const void*>(device)));
         check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, reinterpret_cast<const void*>(scheme)));
         check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_XTVERSION, reinterpret_cast<const void*>(version)));
+        check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(writeClipboard)));
+        size_t clipboardLimit = 60000;
+        check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES, &clipboardLimit));
+        // Clipboard reads remain unregistered: remote queries cannot retrieve
+        // phone clipboard contents. Only bounded standard text writes queue.
         GhosttyColorRgb fg{230, 237, 243}, bg{16, 20, 28};
         check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg));
         check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg));
@@ -103,6 +109,34 @@ void Engine::writeReply(GhosttyTerminal, void* user, const uint8_t* data, size_t
     if (len > 65536 - self.replies.size()) { self.replyOverflow = true; return; }
     try { self.replies.insert(self.replies.end(), data, data + len); }
     catch (...) { self.replyOverflow = true; }
+}
+void Engine::writeClipboard(GhosttyTerminal, void* user, const GhosttyClipboardWrite* request) {
+    // Borrowed callback data must be copied before returning; never unwind into Zig.
+    if (!request || request->size < sizeof(GhosttyClipboardWrite)) return;
+    GhosttyClipboardWriteReply reply = GHOSTTY_INIT_SIZED(GhosttyClipboardWriteReply);
+    reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED;
+    if (request->location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD && request->contents_len == 1 && request->contents) {
+        const auto& content = request->contents[0];
+        static const char mime[] = "text/plain";
+        if (content.mime.len == sizeof(mime) - 1 && content.mime.ptr &&
+            std::memcmp(content.mime.ptr, mime, sizeof(mime) - 1) == 0 &&
+            content.data.len <= 60000 && (content.data.ptr || content.data.len == 0)) {
+            try {
+                std::vector<uint8_t> text;
+                if (content.data.len) text.assign(content.data.ptr, content.data.ptr + content.data.len);
+                // Coalesce to the latest value rather than growing an unbounded
+                // queue when remote output contains many clipboard operations.
+                static_cast<Engine*>(user)->clipboard = std::move(text);
+                reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+            } catch (...) { reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_IO_ERROR; }
+        }
+    }
+    if (request->reply) request->reply(request, &reply);
+}
+std::optional<std::vector<uint8_t>> Engine::takeClipboard() {
+    auto result = std::move(clipboard);
+    clipboard.reset();
+    return result;
 }
 bool Engine::reportSize(GhosttyTerminal, void* user, GhosttySizeReportSize* out) {
     auto& self = *static_cast<Engine*>(user);

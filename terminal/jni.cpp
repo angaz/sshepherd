@@ -55,6 +55,9 @@ JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_frame(JNIEnv* env, 
 JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_replies(JNIEnv* env, jclass, jlong id) {
     GUARD(return output(env, get(id).takeReplies());, nullptr)
 }
+JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_clipboard(JNIEnv* env, jclass, jlong id) {
+    GUARD(auto value = get(id).takeClipboard(); return value ? output(env, *value) : nullptr;, nullptr)
+}
 JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_key(JNIEnv* env, jclass, jlong id, jint code, jint mods, jint consumed, jint action, jbyteArray text) {
     GUARD(auto bytes = input(env, text, 64); return output(env, get(id).key(code, mods, action, std::string(bytes.begin(), bytes.end()), consumed));, nullptr)
 }
