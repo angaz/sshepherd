@@ -79,6 +79,21 @@ class Framing(unittest.TestCase):
             response = json.loads(bridge.directory_request(b'{"id":"bad","action":"pane.close"}'))
             self.assertTrue(response['error']); rpc.assert_not_called()
 
+    def test_summary_counts_only_recognized_agents_without_forwarding_metadata(self):
+        agents = [{'agent': 'pi', 'agent_status': status, 'title': 'private', 'tokens': 'secret'}
+                  for status in ('working', 'idle', 'idle', 'blocked', 'done', 'future')]
+        agents += [{'agent': None, 'agent_status': 'idle'}, {'agent': '', 'agent_status': 'working'},
+                   {'display_agent': 'claude', 'agent': None, 'agent_status': None}]
+        with patch.object(bridge, 'herdr_request', return_value={'snapshot': {'agents': agents}}) as rpc:
+            response = json.loads(bridge.directory_request(b'{"id":"s1","action":"summary"}'))
+            rpc.assert_called_once_with('session.snapshot', {})
+        self.assertEqual(response, {'id': 's1', 'error': '', 'summary': {
+            'working': 1, 'blocked': 1, 'idle': 2, 'done': 1, 'unknown': 2}})
+        for invalid in ({}, [None], [{}] * 4097):
+            with patch.object(bridge, 'herdr_request', return_value={'snapshot': {'agents': invalid}}):
+                response = json.loads(bridge.directory_request(b'{"id":"s2","action":"summary"}'))
+                self.assertTrue(response['error']); self.assertNotIn('summary', response)
+
     def test_focus_waits_for_all_preceding_partial_pty_writes(self):
         payload = b'queued composition'
         initial = frame(2, struct.pack('>HH', 80, 24)) + frame(1, payload) + frame(6, b'{"id":"focus","action":"workspace","workspace_id":"w2"}')

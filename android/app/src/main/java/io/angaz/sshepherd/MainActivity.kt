@@ -35,10 +35,14 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var terminal: TerminalView? = null
     private var notice: TextView? = null
+    private var noticeMessage = ""
+    private var noticeError = false
+    private var agentSummary: AgentSummary? = null
     private var controls: TerminalControls? = null
     private var terminalContent: View? = null
     private var workspaceScreen: WorkspaceScreen? = null
     private var workspaceRequest: String? = null
+    private var workspaceAction: String? = null
     private var workspaceSelecting = false
     private var workspaceTimeout: Runnable? = null
     private var session = 0L
@@ -64,6 +68,16 @@ class MainActivity : AppCompatActivity() {
         java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
         java.util.concurrent.ThreadFactory { work -> Thread(work, "clipboard-file-reader").apply { isDaemon = true } })
     private val disconnectInBackground = Runnable { if (away && !destroyed) showServers() }
+    private val refreshAgentSummary = object : Runnable {
+        override fun run() {
+            if (destroyed || terminal == null || activeHost == null) return
+            if (!away && phase == "connected" && workspaceScreen == null && workspaceRequest == null &&
+                !workspaceSelecting && imageTransfer == null && !readingContent && contentDialog == null) {
+                requestWorkspaces(JSONObject().put("action", "summary"))
+            }
+            handler.postDelayed(this, 2000)
+        }
+    }
     private val backgroundColor = 0xff10141c.toInt()
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -304,7 +318,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun clearWorkspaceRequest() {
         workspaceTimeout?.let { handler.removeCallbacks(it) }
-        workspaceTimeout = null; workspaceRequest = null
+        workspaceTimeout = null; workspaceRequest = null; workspaceAction = null
     }
     private fun showWorkspaces(view: TerminalView) {
         // Commit pre-edit before hiding the IME; opening this native list never
@@ -323,7 +337,10 @@ class MainActivity : AppCompatActivity() {
             }
         }, back = ::closeWorkspaces))
         if (workspaceSelecting) workspaceScreen?.loading("Waiting for the switch to be confirmed…")
-        else requestWorkspaces(JSONObject().put("action", "list"))
+        else {
+            workspaceScreen?.loading("Loading workspaces…")
+            requestWorkspaces(JSONObject().put("action", "list"))
+        }
     }
     private fun openWorkspaceScreen(screen: WorkspaceScreen) {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
@@ -342,29 +359,38 @@ class MainActivity : AppCompatActivity() {
         // Navigating back cannot cancel a submitted focus RPC. Retain its ID
         // and input guard until confirmation, just as while browsing.
         if (!workspaceSelecting) {
-            clearWorkspaceRequest()
+            // Back cannot cancel the bridge's read-only worker either. Keep
+            // tracking it so reopening waits for its result instead of racing.
             terminal?.acceptingInput = phase == "connected" && imageTransfer == null
             terminal?.requestFocus()
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
         }
     }
     private fun requestWorkspaces(request: JSONObject) {
-        val screen = workspaceScreen ?: return
+        val action = request.getString("action")
+        val summary = action == "summary"
+        val screen = workspaceScreen
+        if (screen == null && !summary) return
         if (workspaceRequest != null) return
-        if (phase != "connected") { screen.error("Not connected. Reconnect and open the list again."); return }
+        if (phase != "connected") { if (!summary) screen?.error("Not connected. Reconnect and open the list again."); return }
         val id = java.util.UUID.randomUUID().toString()
         request.put("id", id)
-        workspaceRequest = id
-        workspaceSelecting = request.getString("action") != "list"
+        workspaceRequest = id; workspaceAction = action
+        workspaceSelecting = action == "workspace" || action == "pane"
         if (workspaceSelecting) terminal?.acceptingInput = false
-        screen.loading(if (!workspaceSelecting) "Loading workspaces…" else "Switching…")
+        if (!summary) screen?.loading(if (!workspaceSelecting) "Loading workspaces…" else "Switching…")
         if (!enqueueFrame(PtyFrames.directory(request))) {
-            clearWorkspaceRequest(); finishWorkspaceSelection()
-            screen.error("Input queue full. Try refreshing."); return
+            if (summary) finishAgentSummary(null)
+            else {
+                clearWorkspaceRequest(); finishWorkspaceSelection()
+                screen?.error("Input queue full. Try refreshing.")
+            }
+            return
         }
         workspaceTimeout = Runnable {
             if (workspaceRequest == id) {
-                if (workspaceSelecting) {
+                if (summary) finishAgentSummary(null)
+                else if (workspaceSelecting) {
                     // A network timeout does not prove a focus mutation failed.
                     // Never resume typing into an unconfirmed target.
                     workspaceTimeout = null
@@ -381,11 +407,22 @@ class MainActivity : AppCompatActivity() {
         terminal?.acceptingInput = phase == "connected" && imageTransfer == null && workspaceScreen == null
         if (workspaceScreen == null) terminal?.requestFocus()
     }
+    private fun finishAgentSummary(summary: AgentSummary?) {
+        clearWorkspaceRequest()
+        agentSummary = summary; renderNotice()
+        // An interactive list waits behind a pending read-only summary, never
+        // races it on the bridge's single bounded API worker.
+        if (workspaceScreen != null) requestWorkspaces(JSONObject().put("action", "list"))
+    }
     private fun receiveWorkspaces(data: String) {
         try {
             val response = JSONObject(data)
             if (response.optString("id") != workspaceRequest) return
             val error = response.optString("error")
+            if (workspaceAction == "summary") {
+                finishAgentSummary(if (error.isEmpty()) AgentSummary.decode(response.getJSONObject("summary")) else null)
+                return
+            }
             if (workspaceSelecting && response.optBoolean("uncertain")) {
                 workspaceTimeout?.let { handler.removeCallbacks(it) }; workspaceTimeout = null
                 workspaceScreen?.loading("Switch may have been applied. Input paused; reconnect to continue.")
@@ -403,7 +440,8 @@ class MainActivity : AppCompatActivity() {
                 else -> workspaceScreen?.display(WorkspaceDirectory.rows(response))
             }
         } catch (_: Exception) {
-            if (workspaceSelecting) workspaceScreen?.loading("Invalid switch confirmation. Input paused; reconnect to continue.")
+            if (workspaceAction == "summary") finishAgentSummary(null)
+            else if (workspaceSelecting) workspaceScreen?.loading("Invalid switch confirmation. Input paused; reconnect to continue.")
             else { clearWorkspaceRequest(); workspaceScreen?.error("Invalid workspace list. Refresh to retry.") }
         }
     }
@@ -504,8 +542,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private fun setNotice(message: String, error: Boolean = false) {
-        notice?.text = message
-        notice?.setTextColor(if (error) 0xffff9d93.toInt() else 0xffb5c5d8.toInt())
+        noticeMessage = message; noticeError = error
+        renderNotice()
+    }
+    private fun renderNotice() {
+        val summary = if (phase == "connected" && activeHost != null && !noticeError) agentSummary?.text else null
+        notice?.text = if (summary == null) noticeMessage else "$noticeMessage · $summary"
+        notice?.setTextColor(if (noticeError) 0xffff9d93.toInt() else 0xffb5c5d8.toInt())
     }
     private fun enqueueInput(bytes: ByteArray): Boolean {
         if (phase != "connected" || bytes.isEmpty()) return false
@@ -560,12 +603,16 @@ class MainActivity : AppCompatActivity() {
                     phase = event.getString("phase")
                     terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null
                     if (phase != "connected") {
+                        agentSummary = null
                         if (workspaceSelecting) workspaceScreen?.loading("Connection interrupted; waiting for switch confirmation…")
                         else { clearWorkspaceRequest(); workspaceScreen?.error("Connection interrupted. Refresh after reconnecting.") }
                     }
                     setNotice(if (phase == "connected" && workspaceSelecting) "Connected; waiting for workspace switch confirmation. Input paused."
                         else event.getString("message"), phase == "error")
-                    if (phase == "connected") { activeHost?.let { failures.remove(it.id) }; resizePending = true }
+                    if (phase == "connected") {
+                        activeHost?.let { failures.remove(it.id) }; resizePending = true
+                        handler.removeCallbacks(refreshAgentSummary); handler.post(refreshAgentSummary)
+                    }
                     if (phase == "error") activeHost?.let { failures.add(it.id) }
                 }
             }
@@ -577,6 +624,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun disconnect() {
         val old = session; session = 0; phase = "idle"
+        handler.removeCallbacks(refreshAgentSummary); agentSummary = null
         clearWorkspaceRequest(); workspaceSelecting = false
         closeWorkspaces()
         terminal?.acceptingInput = false

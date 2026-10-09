@@ -46,6 +46,9 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     private val baseline = -text.fontMetrics.ascent
     private var connection: TerminalInputConnection? = null
     private var composition = ""
+    private var hiddenHeaderRows = 0 // latched PTY padding, not overlay cropping
+    private var cropHeaderRows = 0
+    private var paneScale = 1f
     private var touchId = -1
     private var touchX = 0f
     private var touchY = 0f
@@ -79,8 +82,13 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         if (replies.isNotEmpty()) onInput(replies)
     }
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) = safely {
-        cols = (w / cellWidth).coerceIn(2, 500)
-        rows = (h / cellHeight).coerceIn(2, 300)
+        val columns = (w / cellWidth).coerceIn(2, 500)
+        if (columns != cols) { hiddenHeaderRows = 0; cropHeaderRows = 0; paneScale = 1f }
+        cols = columns
+        resizeViewport()
+    }
+    private fun resizeViewport() {
+        rows = TerminalViewport.remoteRows(height / cellHeight, hiddenHeaderRows)
         GhosttyNative.resize(engine, cols, rows, cellWidth, cellHeight)
         // PTY geometry first, then any in-band terminal size response.
         onGeometry(cols, rows)
@@ -93,26 +101,43 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         safely {
             if (dirty) { snapshot = TerminalFrame.decode(GhosttyNative.frame(engine)); dirty = false }
             val frame = snapshot ?: return
+            val hasHeader = TerminalViewport.hasMobileHeader(frame)
+            if (hiddenHeaderRows == 0 && hasHeader) {
+                // Confirm the actual rendered layout instead of guessing from
+                // terminal width or modifying shared Herdr configuration.
+                // Latch until the column count changes, so partial redraws do
+                // not repeatedly resize the remote PTY.
+                hiddenHeaderRows = 2
+                resizeViewport()
+            }
+            // Herdr's legacy switcher/other overlays replace the header. Do
+            // not crop their controls; fit all padded rows without resizing the
+            // PTY on a transient partial redraw. Mouse uses the inverse scale.
+            cropHeaderRows = if (hasHeader) 2 else 0
+            paneScale = if (hiddenHeaderRows > 0 && cropHeaderRows == 0)
+                TerminalViewport.overlayScale(height, frame.rows, cellHeight) else 1f
             canvas.drawColor(frame.background)
-            for (index in frame.cells.indices) {
+            canvas.save(); canvas.scale(1f, paneScale)
+            val paneCells = cropHeaderRows * frame.cols until frame.cells.size
+            for (index in paneCells) {
                 val cell = frame.cells[index]
                 val x = (index % frame.cols * cellWidth).toFloat()
-                val y = (index / frame.cols * cellHeight).toFloat()
+                val y = TerminalViewport.paneY(index / frame.cols, cropHeaderRows, cellHeight)
                 if (cell.background != frame.background) {
                     fill.color = cell.background
                     canvas.drawRect(x, y, x + cellWidth, y + cellHeight, fill)
                 }
             }
-            for (index in frame.cells.indices) {
+            for (index in paneCells) {
                 val cell = frame.cells[index]
                 if (cell.width == 0 || cell.flags and 16 != 0) continue
                 val x = (index % frame.cols * cellWidth).toFloat()
-                val y = (index / frame.cols * cellHeight).toFloat()
+                val y = TerminalViewport.paneY(index / frame.cols, cropHeaderRows, cellHeight)
                 drawCell(canvas, cell, x, y, cell.foreground)
             }
-            if (frame.cursorFlags and 1 != 0 && (frame.cursorFlags and 2 == 0 || SystemClock.uptimeMillis() % 1000 < 500)) {
+            if (frame.cursorY >= cropHeaderRows && frame.cursorFlags and 1 != 0 && (frame.cursorFlags and 2 == 0 || SystemClock.uptimeMillis() % 1000 < 500)) {
                 val x = (frame.cursorX * cellWidth).toFloat()
-                val y = (frame.cursorY * cellHeight).toFloat()
+                val y = TerminalViewport.paneY(frame.cursorY, cropHeaderRows, cellHeight)
                 fill.color = frame.cursorColor
                 when (frame.cursorStyle) {
                     0 -> canvas.drawRect(x, y, x + max(2f, cellWidth / 7f), y + cellHeight, fill)
@@ -125,6 +150,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
                     }
                 }
             }
+            canvas.restore()
             if (composition.isNotEmpty()) {
                 // Control-containing or Ctrl-latched pre-edit waits for commitment.
                 fill.color = 0xff263a4b.toInt()
@@ -259,17 +285,17 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
                     if (connection?.finishComposingText() == false) return true
                     connection?.discardComposition()
                     requestFocus(); touchId = event.getPointerId(0); touchX = event.x; touchY = event.y
-                    if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 0, 1, touchX.toDouble(), touchY.toDouble(), 0))
+                    if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 0, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val index = event.findPointerIndex(touchId)
                     if (index >= 0) {
                         touchX = event.getX(index); touchY = event.getY(index)
-                        if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 2, 1, touchX.toDouble(), touchY.toDouble(), 0))
+                        if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 2, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (touchId != -1 && acceptingInput) sendRaw(GhosttyNative.mouse(engine, 1, 1, touchX.toDouble(), touchY.toDouble(), 0))
+                    if (touchId != -1 && acceptingInput) sendRaw(GhosttyNative.mouse(engine, 1, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
                     touchId = -1
                     if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
                 }

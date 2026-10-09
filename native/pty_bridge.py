@@ -144,7 +144,19 @@ def directory_request(body):
     focus_submitted = False
     try:
         action = request.get('action')
-        if action == 'list':
+        if action == 'summary':
+            agents = herdr_request('session.snapshot', {})['snapshot']['agents']
+            if not isinstance(agents, list) or len(agents) > 4096 or any(not isinstance(agent, dict) for agent in agents):
+                raise ValueError('invalid agents')
+            counts = dict.fromkeys(('working', 'blocked', 'idle', 'done', 'unknown'), 0)
+            for agent in agents:
+                kind = agent.get('display_agent') or agent.get('agent')
+                if not isinstance(kind, str) or not kind.strip():
+                    continue
+                status = agent.get('agent_status')
+                counts[status if isinstance(status, str) and status in counts else 'unknown'] += 1
+            reply['summary'] = counts
+        elif action == 'list':
             snapshot = herdr_request('session.snapshot', {})['snapshot']
             for name, limit, fields in (
                 ('workspaces', 512, ('workspace_id', 'label', 'agent_status', 'pane_count', 'tab_count')),

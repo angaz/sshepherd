@@ -36,6 +36,8 @@ class MainActivityTest {
         assertNull(request.get(activity)); assertFalse(selecting.getBoolean(activity))
         request.set(activity, "list")
         call("closeWorkspaces")
+        assertEquals("list", request.get(activity))
+        call("receiveWorkspaces", """{"id":"list","workspaces":[],"agents":[]}""")
         assertNull(request.get(activity))
         controller.pause().stop().destroy()
     }
@@ -65,6 +67,49 @@ class MainActivityTest {
         assertEquals(View.VISIBLE, scene.visibility)
         assertNull(field("workspaceScreen").get(activity))
         assertFalse(org.robolectric.Shadows.shadowOf(ime).isSoftInputVisible)
+        controller.pause().stop().destroy()
+    }
+    @Test fun summaryUsesNativeStatusAndSerializesWithInteractiveList() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun call(name: String, vararg args: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }.invoke(activity, *args)
+        val notice = android.widget.TextView(activity)
+        field("notice").set(activity, notice)
+        field("phase").set(activity, "connected")
+        field("activeHost").set(activity, HostEntry("fixture", "Fixture", "192.0.2.1"))
+        call("setNotice", "Connected", false)
+        call("requestWorkspaces", org.json.JSONObject().put("action", "summary"))
+        val id = field("workspaceRequest").get(activity) as String
+        assertEquals("summary", field("workspaceAction").get(activity))
+        assertFalse(field("workspaceSelecting").getBoolean(activity))
+        val counts = """{"working":1,"blocked":0,"idle":13,"done":0,"unknown":0}"""
+        call("receiveWorkspaces", """{"id":"old","summary":$counts}""")
+        assertEquals("Connected", notice.text.toString())
+        call("receiveWorkspaces", """{"id":"$id","summary":$counts}""")
+        assertEquals("Connected · 1 working · 13 idle", notice.text.toString())
+        assertNull(field("workspaceRequest").get(activity))
+        call("setNotice", "Input paused", true)
+        assertEquals("Input paused", notice.text.toString())
+        call("setNotice", "Connected", false)
+        call("requestWorkspaces", org.json.JSONObject().put("action", "summary"))
+        val pending = field("workspaceRequest").get(activity) as String
+        val screen = WorkspaceScreen(activity, {}, {}, {})
+        call("openWorkspaceScreen", screen)
+        call("requestWorkspaces", org.json.JSONObject().put("action", "list"))
+        assertEquals(pending, field("workspaceRequest").get(activity))
+        call("closeWorkspaces")
+        assertEquals(pending, field("workspaceRequest").get(activity))
+        call("openWorkspaceScreen", WorkspaceScreen(activity, {}, {}, {}))
+        call("requestWorkspaces", org.json.JSONObject().put("action", "list"))
+        assertEquals(pending, field("workspaceRequest").get(activity))
+        assertEquals("summary", field("workspaceAction").get(activity))
+        call("receiveWorkspaces", """{"id":"$pending","error":"Unavailable"}""")
+        assertEquals("list", field("workspaceAction").get(activity))
+        assertNotEquals(pending, field("workspaceRequest").get(activity))
+        assertEquals("Connected", notice.text.toString())
+        assertFalse(field("workspaceSelecting").getBoolean(activity))
         controller.pause().stop().destroy()
     }
     @Test fun suppliedAdaptiveLauncherIconsLoad() {
