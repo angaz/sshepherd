@@ -41,6 +41,8 @@ class MainActivity : AppCompatActivity() {
     private var controls: TerminalControls? = null
     private var terminalContent: View? = null
     private var workspaceScreen: WorkspaceScreen? = null
+    private var scratchpadScreen: ScratchpadScreen? = null
+    private var scratchpadDiscardDialog: AlertDialog? = null
     private var workspaceRequest: String? = null
     private var workspaceAction: String? = null
     private var workspaceSelecting = false
@@ -71,7 +73,7 @@ class MainActivity : AppCompatActivity() {
     private val refreshAgentSummary = object : Runnable {
         override fun run() {
             if (destroyed || terminal == null || activeHost == null) return
-            if (!away && phase == "connected" && workspaceScreen == null && workspaceRequest == null &&
+            if (!away && phase == "connected" && workspaceScreen == null && scratchpadScreen == null && workspaceRequest == null &&
                 !workspaceSelecting && imageTransfer == null && !readingContent && contentDialog == null) {
                 requestWorkspaces(JSONObject().put("action", "summary"))
             }
@@ -116,7 +118,8 @@ class MainActivity : AppCompatActivity() {
         setTitleTextColor(0xffe6edf3.toInt()); setSubtitleTextColor(0xffb5c5cd.toInt())
     }
     private fun navigateBack() {
-        if (workspaceScreen != null) backFromWorkspaces()
+        if (scratchpadScreen != null) backFromScratchpad()
+        else if (workspaceScreen != null) backFromWorkspaces()
         else if (controls?.expanded == true) controls?.setExpanded(false)
         else if (activeHost != null) showServers() else finish()
     }
@@ -236,8 +239,9 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, 2, 1, "Next tab").setIcon(R.drawable.ic_next).setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
             menu.add(0, 3, 2, "Workspaces").setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS or android.view.MenuItem.SHOW_AS_ACTION_WITH_TEXT)
             menu.add(0, 4, 3, "Zoom pane")
+            menu.add(0, 5, 4, "Scrollback scratchpad")
             setOnMenuItemClickListener {
-                when (it.itemId) { 1 -> view.herdrAction('p'); 2 -> view.herdrAction('n'); 3 -> showWorkspaces(view); 4 -> view.herdrAction('z') }
+                when (it.itemId) { 1 -> view.herdrAction('p'); 2 -> view.herdrAction('n'); 3 -> showWorkspaces(view); 4 -> view.herdrAction('z'); 5 -> showScratchpad(view) }
                 true
             }
         }, LinearLayout.LayoutParams(-1, dp(56)))
@@ -316,6 +320,43 @@ class MainActivity : AppCompatActivity() {
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
         view.requestFocus()
     }
+    private fun showScratchpad(view: TerminalView) {
+        if (scratchpadScreen != null || workspaceScreen != null || workspaceSelecting || phase != "connected" ||
+            imageTransfer != null || readingContent || contentDialog != null) return
+        if (!view.prepareContent()) return
+        openScratchpadScreen(ScratchpadScreen(this, { requestWorkspaces(JSONObject().put("action", "scrollback")) }, ::backFromScratchpad))
+        requestWorkspaces(JSONObject().put("action", "scrollback"))
+    }
+    private fun openScratchpadScreen(screen: ScratchpadScreen) {
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
+        terminal?.clearFocus(); terminal?.acceptingInput = false
+        terminalContent?.visibility = View.INVISIBLE
+        scratchpadScreen = screen
+        root.addView(screen, FrameLayout.LayoutParams(-1, -1))
+        screen.requestFocus()
+    }
+    private fun backFromScratchpad() {
+        if (scratchpadScreen?.hasEdits != true) { closeScratchpad(); return }
+        if (scratchpadDiscardDialog != null) return
+        scratchpadDiscardDialog = MaterialAlertDialogBuilder(this).setTitle("Discard scratchpad edits?")
+            .setMessage("Edits are local only. Copy anything you want to keep before closing.")
+            .setNegativeButton("Keep editing", null).setPositiveButton("Discard") { _, _ -> closeScratchpad() }
+            .create().also { dialog ->
+                dialog.setOnDismissListener { if (scratchpadDiscardDialog === dialog) scratchpadDiscardDialog = null }
+                dialog.show()
+            }
+    }
+    private fun closeScratchpad() {
+        scratchpadDiscardDialog?.dismiss(); scratchpadDiscardDialog = null
+        scratchpadScreen?.let {
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken, 0)
+            root.removeView(it)
+        }
+        scratchpadScreen = null
+        terminalContent?.visibility = View.VISIBLE
+        terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null
+        terminal?.requestFocus()
+    }
     private fun clearWorkspaceRequest() {
         workspaceTimeout?.let { handler.removeCallbacks(it) }
         workspaceTimeout = null; workspaceRequest = null; workspaceAction = null
@@ -323,7 +364,7 @@ class MainActivity : AppCompatActivity() {
     private fun showWorkspaces(view: TerminalView) {
         // Commit pre-edit before hiding the IME; opening this native list never
         // sends Ctrl+A/W or opens the terminal-rendered sidebar.
-        if (workspaceScreen != null) return
+        if (workspaceScreen != null || scratchpadScreen != null) return
         view.prepareContent()
         val id = session
         openWorkspaceScreen(WorkspaceScreen(this, refresh = ::refreshWorkspaces, select = { row ->
@@ -391,9 +432,15 @@ class MainActivity : AppCompatActivity() {
         val action = request.getString("action")
         val summary = action == "summary"
         val screen = workspaceScreen
-        if (screen == null && !summary) return
+        val scratchpad = scratchpadScreen
+        val scrollback = action == "scrollback"
+        if (screen == null && !summary && !(scrollback && scratchpad != null)) return
         if (workspaceRequest != null) return
-        if (phase != "connected") { if (!summary) screen?.error("Not connected. Reconnect and open the list again."); return }
+        if (phase != "connected") {
+            if (!summary) screen?.error("Not connected. Reconnect and open the list again.")
+            if (scrollback) scratchpad?.error("Not connected. Reconnect and open the scratchpad again.")
+            return
+        }
         val id = java.util.UUID.randomUUID().toString()
         request.put("id", id)
         workspaceRequest = id; workspaceAction = action
@@ -405,11 +452,13 @@ class MainActivity : AppCompatActivity() {
             "workspace", "pane" -> "Switching…"
             else -> "Loading workspaces…"
         })
+        if (scrollback) scratchpad?.loading()
         if (!enqueueFrame(PtyFrames.directory(request))) {
             if (summary) finishAgentSummary(null)
             else {
                 clearWorkspaceRequest(); finishWorkspaceSelection()
                 screen?.error("Input queue full. Try refreshing.")
+                if (scrollback) scratchpad?.error("Input queue full. Tap Retry.")
             }
             return
         }
@@ -424,21 +473,22 @@ class MainActivity : AppCompatActivity() {
                     setNotice("Switch not confirmed. Input paused; return to Servers to reconnect.", true)
                 } else {
                     clearWorkspaceRequest(); workspaceScreen?.error("Workspace request timed out. Refresh to retry.")
+                    scratchpadScreen?.error("Scrollback request timed out. Tap Retry.")
                 }
             }
         }.also { handler.postDelayed(it, 8000) }
     }
     private fun finishWorkspaceSelection() {
         workspaceSelecting = false
-        terminal?.acceptingInput = phase == "connected" && imageTransfer == null && workspaceScreen == null
-        if (workspaceScreen == null) terminal?.requestFocus()
+        terminal?.acceptingInput = phase == "connected" && imageTransfer == null && workspaceScreen == null && scratchpadScreen == null
+        if (workspaceScreen == null && scratchpadScreen == null) terminal?.requestFocus()
     }
     private fun finishAgentSummary(summary: AgentSummary?) {
         clearWorkspaceRequest()
         agentSummary = summary; renderNotice()
         // An interactive list waits behind a pending read-only summary, never
         // races it on the bridge's single bounded API worker.
-        refreshWorkspaces()
+        if (scratchpadScreen != null) requestWorkspaces(JSONObject().put("action", "scrollback")) else refreshWorkspaces()
     }
     private fun receiveWorkspaces(data: String) {
         try {
@@ -462,6 +512,11 @@ class MainActivity : AppCompatActivity() {
             finishWorkspaceSelection()
             if (wasSelecting && phase == "connected") setNotice(if (error.isEmpty()) "Connected" else error.take(512), error.isNotEmpty())
             when {
+                !wasSelecting && scratchpadScreen != null && action != "scrollback" -> requestWorkspaces(JSONObject().put("action", "scrollback"))
+                action == "scrollback" && scratchpadScreen != null -> {
+                    if (error.isNotEmpty()) scratchpadScreen?.error("Scrollback unavailable. Tap Retry.")
+                    else scratchpadScreen?.display(ScrollbackSnapshot.decode(response.getJSONObject("scrollback")))
+                }
                 !wasSelecting && workspaceScreen != null && action != workspaceScreen?.browseAction -> refreshWorkspaces()
                 error.isNotEmpty() -> workspaceScreen?.error(error.take(512))
                 wasSelecting -> closeWorkspaces()
@@ -471,7 +526,10 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             if (workspaceAction == "summary") finishAgentSummary(null)
             else if (workspaceSelecting) workspaceScreen?.loading("Invalid switch confirmation. Input paused; reconnect to continue.")
-            else { clearWorkspaceRequest(); workspaceScreen?.error("Invalid workspace list. Refresh to retry.") }
+            else {
+                clearWorkspaceRequest(); workspaceScreen?.error("Invalid workspace list. Refresh to retry.")
+                scratchpadScreen?.error("Invalid scrollback snapshot. Tap Retry.")
+            }
         }
     }
     @Deprecated("Legacy activity result API")
@@ -609,7 +667,7 @@ class MainActivity : AppCompatActivity() {
             transfer.pump { Native.send(session, it) }
             if (transfer.done) {
                 imageTransfer = null
-                view.acceptingInput = workspaceScreen == null && !workspaceSelecting
+                view.acceptingInput = workspaceScreen == null && scratchpadScreen == null && !workspaceSelecting
                 setNotice("Image queued for Herdr image paste.")
             }
         }
@@ -630,9 +688,10 @@ class MainActivity : AppCompatActivity() {
                     receiveWorkspaces(event.getString("data"))
                 } else {
                     phase = event.getString("phase")
-                    terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null
+                    terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null && scratchpadScreen == null
                     if (phase != "connected") {
                         agentSummary = null
+                        scratchpadScreen?.error("Connection interrupted. Retry after reconnecting.")
                         if (workspaceSelecting) workspaceScreen?.loading("Connection interrupted; waiting for switch confirmation…")
                         else { clearWorkspaceRequest(); workspaceScreen?.error("Connection interrupted. Refresh after reconnecting.") }
                     }
@@ -656,6 +715,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(refreshAgentSummary); agentSummary = null
         clearWorkspaceRequest(); workspaceSelecting = false
         closeWorkspaces()
+        closeScratchpad()
         terminal?.acceptingInput = false
         outbound.clear(); queuedBytes = 0; resizePending = false
         cancelContentRead()

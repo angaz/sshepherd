@@ -9,6 +9,7 @@ import pty
 import json
 from pathlib import Path
 import queue
+import re
 import socket
 import threading
 import time
@@ -174,6 +175,36 @@ def list_projects():
     return ['Empty (~)'] + sorted(projects)
 
 
+def scratchpad_snapshot():
+    snapshot = herdr_request('session.snapshot', {})['snapshot']
+    pane = snapshot.get('focused_pane_id')
+    if not isinstance(pane, str) or not 1 <= len(pane) <= 128:
+        raise ValueError('no focused pane')
+    # ANSI snapshots are passive. Herdr's text/recent reads can scroll idle
+    # alternate-screen agents to collect history, affecting other clients.
+    # Ask for 10k lines; older Herdr versions impose their own 1k-line cap.
+    read = herdr_request('pane.read', {'pane_id': pane, 'source': 'recent_unwrapped',
+                                     'lines': 10000, 'format': 'ansi', 'strip_ansi': False})['read']
+    text = read['text']
+    if not isinstance(text, str) or read.get('pane_id') != pane:
+        raise ValueError('invalid pane snapshot')
+    # Herdr/Ghostty emits SGR styling in ANSI snapshots, not raw PTY output.
+    # Strip CSI and OSC links; fail closed on any unexpected escape sequence.
+    text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    if '\x1b' in text:
+        raise ValueError('unsupported snapshot escape')
+    text = ''.join(c for c in text if c in '\n\t' or (ord(c) >= 32 and not 127 <= ord(c) < 160))
+    lines = text.splitlines(keepends=True)
+    truncated = bool(read.get('truncated')) or len(lines) > 10000
+    text = ''.join(lines[-10000:])
+    encoded = text.encode('utf-8')
+    if len(encoded) > 256 * 1024:
+        text = encoded[-256 * 1024:].decode('utf-8', errors='ignore')
+        truncated = True
+    return {'pane_id': pane, 'text': text, 'truncated': truncated}
+
+
 def directory_request(body):
     request = json.loads(body)
     request_id = request.get('id')
@@ -210,6 +241,8 @@ def directory_request(body):
                 reply[name] = [{key: (row[key][:512] if isinstance(row[key], str) else row[key])
                                 for key in fields if key in row and isinstance(row[key], (str, int))}
                                for row in rows]
+        elif action == 'scrollback':
+            reply['scrollback'] = scratchpad_snapshot()
         elif action == 'projects':
             reply['projects'] = list_projects()
         elif action == 'create':

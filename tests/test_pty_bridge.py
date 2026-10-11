@@ -103,6 +103,30 @@ class Framing(unittest.TestCase):
                 response = json.loads(bridge.directory_request(b'{"id":"c","action":"create","project":"alpha"}'))
                 self.assertTrue(response['uncertain'])
 
+    def test_scrollback_is_passive_plain_bounded_and_pane_specific(self):
+        def capture(text, truncated=False):
+            with patch.object(bridge, 'herdr_request', side_effect=[
+                    {'snapshot': {'focused_pane_id': 'w1:p1'}},
+                    {'read': {'pane_id': 'w1:p1', 'text': text, 'truncated': truncated}}]) as rpc:
+                result = json.loads(bridge.directory_request(b'{"id":"s","action":"scrollback"}'))
+                self.assertEqual(rpc.call_args.args, ('pane.read', {
+                    'pane_id': 'w1:p1', 'source': 'recent_unwrapped', 'lines': 10000,
+                    'format': 'ansi', 'strip_ansi': False}))
+                return result
+        text = '\x1b[31mred\x1b[0m\n\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\t🐑\x00'
+        result = capture(text)['scrollback']
+        self.assertEqual(result, {'pane_id': 'w1:p1', 'text': 'red\nlink\t🐑', 'truncated': False})
+        result = capture('old\n' + 'new\n' * 10000)['scrollback']
+        self.assertEqual(result['text'], 'new\n' * 10000); self.assertTrue(result['truncated'])
+        result = capture('🐑' * 100000)['scrollback']
+        self.assertLessEqual(len(result['text'].encode()), 256 * 1024)
+        self.assertTrue(result['truncated']); self.assertNotIn('\ufffd', result['text'])
+        self.assertEqual(capture('')['scrollback']['text'], '')
+        self.assertTrue(capture('\x1bPunexpected')['error'])
+        with patch.object(bridge, 'herdr_request', return_value={'snapshot': {}}) as rpc:
+            self.assertTrue(json.loads(bridge.directory_request(b'{"id":"s","action":"scrollback"}'))['error'])
+            self.assertEqual(rpc.call_count, 1)
+
     def test_summary_counts_only_recognized_agents_without_forwarding_metadata(self):
         agents = [{'agent': 'pi', 'agent_status': status, 'title': 'private', 'tokens': 'secret'}
                   for status in ('working', 'idle', 'idle', 'blocked', 'done', 'future')]
