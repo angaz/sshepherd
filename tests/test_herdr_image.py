@@ -26,6 +26,7 @@ class HerdrImage(unittest.TestCase):
                 (root / name).mkdir(mode=0o700)
             (root / 'config/herdr').mkdir()
             (root / 'config/herdr/config.toml').write_text('onboarding = false\n')
+            (root / 'home/Documents/demo/.git').mkdir(parents=True)
             received = root / 'received'
             shell = root / 'capture-shell'
             shell.write_text(f'#!{sys.executable}\n' + '''import os, tty
@@ -57,6 +58,9 @@ with open(os.environ['FIXTURE_CAPTURE'], 'ab', buffering=0) as out:
                 uploaded = False
                 queried = False
                 focused = False
+                created = False
+                captured = False
+                capture_requested = False
                 decoder = OutputFrames()
                 rendered = bytearray()
                 while time.monotonic() < deadline:
@@ -76,10 +80,23 @@ with open(os.environ['FIXTURE_CAPTURE'], 'ab', buffering=0) as out:
                                     proc.stdin.flush()
                                 elif response['id'] == 'focus':
                                     self.assertTrue(response['selected']); focused = True
+                                    proc.stdin.write(frame(6, b'{"id":"projects","action":"projects"}')); proc.stdin.flush()
+                                elif response['id'] == 'projects':
+                                    self.assertEqual(response['projects'], ['Empty (~)', 'demo'])
+                                    proc.stdin.write(frame(6, b'{"id":"create","action":"create","project":"demo"}')); proc.stdin.flush()
+                                elif response['id'] == 'create':
+                                    self.assertTrue(response['selected']); created = True
+                                elif response['id'] == 'scrollback':
+                                    self.assertIn('FIXTURE_READY', response['scrollback']['text'])
+                                    self.assertNotIn('\x1b', response['scrollback']['text'])
+                                    captured = True
                     if not queried and b'FIXTURE_READY' in rendered:
                         proc.stdin.write(frame(6, b'{"id":"list","action":"list"}'))
                         proc.stdin.flush(); queried = True
-                    if not uploaded and focused:
+                    if created and not capture_requested and rendered.count(b'FIXTURE_READY') >= 2:
+                        proc.stdin.write(frame(6, b'{"id":"scrollback","action":"scrollback"}')); proc.stdin.flush()
+                        capture_requested = True
+                    if not uploaded and captured:
                         proc.stdin.write(frame(3, struct.pack('>I', len(image)) + b'png') + frame(4, image) + frame(5, b''))
                         proc.stdin.flush(); uploaded = True
                     if received.exists() and b'herdr-clipboard-images-' in received.read_bytes():
