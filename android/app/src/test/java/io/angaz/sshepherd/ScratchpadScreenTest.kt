@@ -39,6 +39,34 @@ class ScratchpadScreenTest {
         assertTrue(screen.editor.showSoftInputOnFocus)
         activity.pause().stop().destroy()
     }
+    @Test fun automaticDisconnectAndBackgroundTimeoutPreserveLocalEdits() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun call(name: String, vararg args: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }.invoke(activity, *args)
+        val root = field("root").get(activity) as android.widget.FrameLayout
+        val scene = root.getChildAt(0)
+        field("terminalContent").set(activity, scene)
+        val screen = ScratchpadScreen(activity, {}, {})
+        call("openScratchpadScreen", screen)
+        screen.display(ScrollbackSnapshot("p1", "hello", false))
+        screen.editor.append(" edited")
+        call("disconnect")
+        assertSame(root, screen.parent)
+        assertEquals(View.INVISIBLE, scene.visibility)
+        assertEquals("hello edited", screen.editor.text.toString())
+        assertTrue(screen.editor.isEnabled)
+        controller.pause().stop()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(61))
+        controller.start().resume().visible()
+        assertSame(screen, field("scratchpadScreen").get(activity))
+        assertEquals("hello edited", screen.editor.text.toString())
+        assertTrue(screen.hasEdits)
+        activity.onBackPressedDispatcher.onBackPressed()
+        assertTrue(org.robolectric.shadows.ShadowDialog.getLatestDialog().isShowing)
+        controller.pause().stop().destroy()
+    }
     @Test fun snapshotDecoderRejectsOversizeText() {
         val record = JSONObject().put("pane_id", "p1").put("text", "🐑").put("truncated", false)
         assertEquals("🐑", ScrollbackSnapshot.decode(record).text)

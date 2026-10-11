@@ -69,7 +69,11 @@ class MainActivity : AppCompatActivity() {
     private val contentReader = java.util.concurrent.ThreadPoolExecutor(0, 2, 20,
         java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue(),
         java.util.concurrent.ThreadFactory { work -> Thread(work, "clipboard-file-reader").apply { isDaemon = true } })
-    private val disconnectInBackground = Runnable { if (away && !destroyed) showServers() }
+    private val disconnectInBackground = Runnable {
+        if (away && !destroyed) {
+            if (scratchpadScreen != null) disconnect() else showServers()
+        }
+    }
     private val refreshAgentSummary = object : Runnable {
         override fun run() {
             if (destroyed || terminal == null || activeHost == null) return
@@ -125,6 +129,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun showServers() {
         disconnect()
+        closeScratchpad()
         activeHost = null
         terminal?.let { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken, 0); it.close() }
         terminal = null
@@ -417,14 +422,14 @@ class MainActivity : AppCompatActivity() {
     private fun closeWorkspaces() {
         workspaceScreen?.let { root.removeView(it) }
         workspaceScreen = null
-        terminalContent?.visibility = View.VISIBLE
+        terminalContent?.visibility = if (scratchpadScreen == null) View.VISIBLE else View.INVISIBLE
         // Navigating back cannot cancel a submitted focus RPC. Retain its ID
         // and input guard until confirmation, just as while browsing.
         if (!workspaceSelecting) {
             // Back cannot cancel the bridge's read-only worker either. Keep
             // tracking it so reopening waits for its result instead of racing.
-            terminal?.acceptingInput = phase == "connected" && imageTransfer == null
-            terminal?.requestFocus()
+            terminal?.acceptingInput = phase == "connected" && imageTransfer == null && scratchpadScreen == null
+            if (scratchpadScreen == null) terminal?.requestFocus()
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
         }
     }
@@ -715,7 +720,9 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(refreshAgentSummary); agentSummary = null
         clearWorkspaceRequest(); workspaceSelecting = false
         closeWorkspaces()
-        closeScratchpad()
+        // The snapshot belongs to the phone, not the transport. Keep local
+        // edits alive across automatic detach/failure until explicit Back.
+        scratchpadScreen?.disconnected()
         terminal?.acceptingInput = false
         outbound.clear(); queuedBytes = 0; resizePending = false
         cancelContentRead()
@@ -761,7 +768,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() { super.onStop(); away = true; handler.postDelayed(disconnectInBackground, 60_000) }
     override fun onStart() { super.onStart(); away = false; handler.removeCallbacks(disconnectInBackground) }
     override fun onDestroy() {
-        destroyed = true; contentReader.shutdownNow(); handler.removeCallbacksAndMessages(null); disconnect(); terminal?.close(); terminal = null
+        destroyed = true; contentReader.shutdownNow(); handler.removeCallbacksAndMessages(null); disconnect(); closeScratchpad(); terminal?.close(); terminal = null
         super.onDestroy()
     }
 }

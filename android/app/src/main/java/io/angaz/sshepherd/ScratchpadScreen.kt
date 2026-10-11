@@ -90,6 +90,10 @@ internal class ScratchpadScreen(context: Context, retry: () -> Unit, back: () ->
         toolbar.menu.findItem(1).isVisible = false
         toolbar.menu.findItem(2).isEnabled = true
     }
+    fun disconnected() {
+        if (original == null) error("Disconnected. Return to Servers and reconnect to capture scrollback.")
+        else status.text = "Disconnected · Your local copy is still editable. Edits are not sent. Copy anything you want to keep before closing."
+    }
     fun error(message: String) {
         if (original != null) return
         status.text = message
