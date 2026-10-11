@@ -10,7 +10,9 @@ Run `scripts/build-android.sh` with the toolchain described in the README. It ru
 - Kotlin/JUnit/Robolectric UI, input, host-store and content-lifecycle tests.
 - Android assembly and lint for both supported native architectures.
 
-The optional real-Herdr image test uses an isolated HOME/XDG/TMPDIR and a capture-only shell. It does not use deployment credentials or existing remote sessions.
+The optional real-Herdr test (`SSHEPHERD_TEST_HERDR=/absolute/path/to/herdr python3 -m unittest discover -s tests -v`) covers project listing, workspace creation/focus, passive scrollback capture and image paste. It uses an isolated HOME/XDG/TMPDIR and a capture-only shell, never deployment credentials or existing remote sessions.
+
+Project-picker tests cover discovery depth, worktrees, path traversal/symlink containment, unsupported names, search and duplicate/uncertain creation guards. Scratchpad tests cover passive API parameters, ANSI stripping, Unicode/size/line bounds, native selection/copy/editing, late replies, discard confirmation and retention across automatic detach.
 
 ## Artifact checks
 
