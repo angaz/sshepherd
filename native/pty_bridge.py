@@ -135,6 +135,45 @@ def herdr_request(method, params):
     return response['result']
 
 
+def project_target(project):
+    """Match nix-configs' Ctrl+K helper without passing input to a shell."""
+    if project == 'Empty (~)':
+        return str(Path.home()), '~'
+    if (not isinstance(project, str) or not project or len(project.encode('utf-8')) > 256
+            or any(ord(c) < 32 or ord(c) == 127 for c in project)
+            or project.startswith('/') or any(p in ('', '.', '..') for p in project.split('/'))):
+        raise ValueError('invalid project')
+    root = (Path.home() / 'Documents').resolve(strict=True)
+    target = (root / project).resolve(strict=True)
+    if root not in target.parents or not target.is_dir():
+        raise ValueError('project outside Documents')
+    return str(target), project
+
+
+def list_projects():
+    root = Path.home() / 'Documents'
+    projects = set()
+    if root.is_dir():
+        # .git entries at find -maxdepth 3; do not follow directory symlinks.
+        for directory, dirs, files in os.walk(root):
+            relative = Path(directory).relative_to(root)
+            depth = len(relative.parts)
+            if '.git' in dirs or '.git' in files:
+                project = relative.as_posix()
+                try:
+                    project_target(project)
+                    projects.add(project)
+                except (OSError, ValueError):
+                    pass
+            if depth >= 2:
+                dirs[:] = []
+            else:
+                dirs[:] = [d for d in dirs if d != '.git']
+            if len(projects) > 512:
+                raise ValueError('too many projects')
+    return ['Empty (~)'] + sorted(projects)
+
+
 def directory_request(body):
     request = json.loads(body)
     request_id = request.get('id')
@@ -171,6 +210,13 @@ def directory_request(body):
                 reply[name] = [{key: (row[key][:512] if isinstance(row[key], str) else row[key])
                                 for key in fields if key in row and isinstance(row[key], (str, int))}
                                for row in rows]
+        elif action == 'projects':
+            reply['projects'] = list_projects()
+        elif action == 'create':
+            cwd, label = project_target(request.get('project'))
+            focus_submitted = True
+            herdr_request('workspace.create', {'cwd': cwd, 'label': label, 'focus': True})
+            reply['selected'] = True
         elif action in ('workspace', 'pane'):
             key = action + '_id'
             target = request.get(key)
@@ -272,7 +318,7 @@ def main():
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size(body))
                 elif kind == 6:
                     request = json.loads(body)
-                    if request.get('action') in ('workspace', 'pane') and pending:
+                    if request.get('action') in ('workspace', 'pane', 'create') and pending:
                         # Do not let a separate API socket overtake earlier
                         # keyboard/composition bytes waiting for the PTY.
                         deferred_focus = body

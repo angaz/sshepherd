@@ -10,7 +10,24 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.appbar.MaterialToolbar
 
 /** Full-screen, virtualized native workspace browser; the terminal stays mounted behind it. */
-internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (DirectoryRow) -> Unit, back: () -> Unit) : LinearLayout(context) {
+internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (DirectoryRow) -> Unit, back: () -> Unit,
+    newWorkspace: () -> Unit = {}, private val create: (String) -> Unit = {}) : LinearLayout(context) {
+    var isProjectPicker = false
+        private set
+    val browseAction get() = if (isProjectPicker) "projects" else "list"
+    private var projects = emptyList<String>()
+    private val search = android.widget.EditText(context).apply {
+        hint = "Search projects"; setSingleLine(true)
+        setTextColor(0xffe6edf3.toInt()); setHintTextColor(0xffb5c5cd.toInt())
+        setPadding(dp(16), dp(8), dp(16), dp(8))
+        importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO
+        visibility = GONE
+        addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { filterProjects() }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+    }
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private val toolbar = MaterialToolbar(context).apply {
         title = "Workspaces & agents"
@@ -19,7 +36,9 @@ internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (D
         setNavigationOnClickListener { back() }
         menu.add(0, 1, 0, "Refresh").setIcon(R.drawable.ic_refresh)
             .setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-        setOnMenuItemClickListener { refresh(); true }
+        menu.add(0, 2, 1, "New workspace").setIcon(R.drawable.ic_add)
+            .setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+        setOnMenuItemClickListener { if (it.itemId == 2) newWorkspace() else refresh(); true }
     }
     private val status = TextView(context).apply {
         setTextColor(0xffb5c5cd.toInt()); textSize = 14f
@@ -52,7 +71,9 @@ internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (D
             holder.itemView.contentDescription = "${if (row.isAgent) "Agent" else "Workspace"}: ${row.title}. ${row.detail}"
             holder.itemView.isEnabled = !busy
             holder.itemView.alpha = if (busy) 0.5f else 1f
-            holder.itemView.setOnClickListener { if (!busy) select(row) }
+            holder.itemView.setOnClickListener { if (!busy) {
+                if (isProjectPicker) create(row.id) else select(row)
+            } }
         }
     }
     private val list = RecyclerView(context).apply {
@@ -64,6 +85,7 @@ internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (D
         setBackgroundColor(0xff10141c.toInt())
         isFocusable = true; isFocusableInTouchMode = true
         addView(toolbar, LayoutParams(-1, dp(56)))
+        addView(search, LayoutParams(-1, -2))
         addView(status, LayoutParams(-1, -2))
         addView(list, LayoutParams(-1, 0, 1f))
         addView(TextView(context).apply {
@@ -72,22 +94,48 @@ internal class WorkspaceScreen(context: Context, refresh: () -> Unit, select: (D
             setPadding(dp(16), dp(8), dp(16), dp(8))
         }, LayoutParams(-1, -2))
     }
+    fun projectMode(enabled: Boolean) {
+        isProjectPicker = enabled
+        toolbar.title = if (enabled) "New workspace" else "Workspaces & agents"
+        toolbar.navigationContentDescription = if (enabled) "Back to workspaces" else "Back to terminal"
+        toolbar.menu.findItem(2).isVisible = !enabled
+        search.visibility = if (enabled) VISIBLE else GONE
+        search.setText(""); projects = emptyList()
+        adapter.rows = emptyList(); adapter.notifyDataSetChanged()
+    }
+    fun displayProjects(values: List<String>) {
+        projects = values; adapter.busy = false; search.isEnabled = true
+        toolbar.menu.findItem(1).isEnabled = true
+        filterProjects()
+    }
+    private fun filterProjects() {
+        if (!isProjectPicker) return
+        val query = search.text.toString().trim()
+        adapter.rows = projects.filter { it.contains(query, ignoreCase = true) }
+            .map { DirectoryRow(it, it, if (it == "Empty (~)") "Home directory" else "~/Documents/$it", false) }
+        adapter.notifyDataSetChanged()
+        status.text = if (adapter.rows.isEmpty()) "No matching projects." else "Tap a project to create and focus a new workspace."
+    }
     fun loading(message: String) {
-        status.text = message; adapter.busy = true
+        status.text = message; adapter.busy = true; search.isEnabled = false
         adapter.notifyDataSetChanged()
         toolbar.menu.findItem(1).isEnabled = false
+        toolbar.menu.findItem(2).isEnabled = false
     }
     fun display(rows: List<DirectoryRow>) {
-        adapter.rows = rows; adapter.busy = false
+        adapter.rows = rows; adapter.busy = false; search.isEnabled = true
         adapter.notifyDataSetChanged()
         status.text = if (rows.isEmpty()) "No workspaces." else "Tap a workspace or agent to switch."
         toolbar.menu.findItem(1).isEnabled = true
+        toolbar.menu.findItem(2).isEnabled = true
     }
     fun error(message: String) {
-        status.text = message
+        status.text = message; search.isEnabled = true
         // Stale rows must not act while disconnected or after a failed refresh.
+        projects = emptyList()
         adapter.rows = emptyList(); adapter.busy = false; adapter.notifyDataSetChanged()
         toolbar.menu.findItem(1).isEnabled = true
+        toolbar.menu.findItem(2).isEnabled = true
     }
     private class RowHolder(view: LinearLayout, val title: TextView, val detail: TextView) : RecyclerView.ViewHolder(view)
 }

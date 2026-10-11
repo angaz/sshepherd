@@ -79,6 +79,30 @@ class Framing(unittest.TestCase):
             response = json.loads(bridge.directory_request(b'{"id":"bad","action":"pane.close"}'))
             self.assertTrue(response['error']); rpc.assert_not_called()
 
+    def test_projects_match_ctrl_k_discovery_and_create_without_shell(self):
+        with tempfile.TemporaryDirectory() as home, patch.object(bridge.Path, 'home', return_value=Path(home)):
+            root = Path(home) / 'Documents'
+            (root / 'alpha/.git').mkdir(parents=True)
+            (root / 'group/worktree').mkdir(parents=True)
+            (root / 'group/worktree/.git').write_text('gitdir: elsewhere')
+            (root / 'too/deep/repo/.git').mkdir(parents=True)
+            (root / 'escape').symlink_to(Path(home), target_is_directory=True)
+            (root / 'bad\nname/.git').mkdir(parents=True)
+            response = json.loads(bridge.directory_request(b'{"id":"p","action":"projects"}'))
+            self.assertEqual(response['projects'], ['Empty (~)', 'alpha', 'group/worktree'])
+            for project, cwd, label in [('alpha', root / 'alpha', 'alpha'), ('Empty (~)', Path(home), '~')]:
+                with patch.object(bridge, 'herdr_request', return_value={}) as rpc:
+                    body = json.dumps({'id': 'c', 'action': 'create', 'project': project}).encode()
+                    self.assertTrue(json.loads(bridge.directory_request(body))['selected'])
+                    rpc.assert_called_once_with('workspace.create', {'cwd': str(cwd), 'label': label, 'focus': True})
+            for project in ('../', '/tmp', 'alpha/../alpha', 'escape', '', 'alpha\n', None):
+                with patch.object(bridge, 'herdr_request') as rpc:
+                    response = json.loads(bridge.directory_request(json.dumps({'id': 'c', 'action': 'create', 'project': project}).encode()))
+                    self.assertTrue(response['error']); self.assertFalse(response['uncertain']); rpc.assert_not_called()
+            with patch.object(bridge, 'herdr_request', side_effect=TimeoutError()):
+                response = json.loads(bridge.directory_request(b'{"id":"c","action":"create","project":"alpha"}'))
+                self.assertTrue(response['uncertain'])
+
     def test_summary_counts_only_recognized_agents_without_forwarding_metadata(self):
         agents = [{'agent': 'pi', 'agent_status': status, 'title': 'private', 'tokens': 'secret'}
                   for status in ('working', 'idle', 'idle', 'blocked', 'done', 'future')]

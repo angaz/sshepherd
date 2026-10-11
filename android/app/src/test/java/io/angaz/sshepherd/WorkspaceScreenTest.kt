@@ -22,6 +22,36 @@ class WorkspaceScreenTest {
             View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, width, height)
     }
+    @Test fun projectPickerFiltersCreatesAndDisablesDuplicateSubmissions() {
+        val activity = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val created = mutableListOf<String>()
+        var opened = false
+        val screen = WorkspaceScreen(activity.get(), {}, {}, {}, { opened = true }, { created.add(it) })
+        activity.get().setContentView(screen)
+        val toolbar = children(screen).filterIsInstance<MaterialToolbar>().single()
+        toolbar.menu.performIdentifierAction(2, 0)
+        assertTrue(opened)
+        screen.projectMode(true)
+        screen.displayProjects(listOf("Empty (~)", "sshepherd", "group/Nix-configs"))
+        val search = children(screen).filterIsInstance<android.widget.EditText>().single()
+        search.setText("NIX")
+        val list = children(screen).filterIsInstance<RecyclerView>().single()
+        layout(screen, 400, 800)
+        assertEquals(1, list.adapter!!.itemCount)
+        list.findViewHolderForAdapterPosition(0)!!.itemView.performClick()
+        assertEquals(listOf("group/Nix-configs"), created)
+        screen.loading("Creating…")
+        layout(screen, 400, 800)
+        list.findViewHolderForAdapterPosition(0)!!.itemView.performClick()
+        assertEquals(1, created.size)
+        screen.error("Failed")
+        search.setText("")
+        assertEquals(0, list.adapter!!.itemCount)
+        screen.projectMode(false)
+        assertEquals("list", screen.browseAction)
+        assertEquals(View.GONE, search.visibility)
+        activity.pause().stop().destroy()
+    }
     @Test fun nativeScreenUsesRemainingHeightWithoutAModalAndKeepsActionsUsable() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).setup()
         var refreshed = 0

@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
         setTitleTextColor(0xffe6edf3.toInt()); setSubtitleTextColor(0xffb5c5cd.toInt())
     }
     private fun navigateBack() {
-        if (workspaceScreen != null) closeWorkspaces()
+        if (workspaceScreen != null) backFromWorkspaces()
         else if (controls?.expanded == true) controls?.setExpanded(false)
         else if (activeHost != null) showServers() else finish()
     }
@@ -326,7 +326,7 @@ class MainActivity : AppCompatActivity() {
         if (workspaceScreen != null) return
         view.prepareContent()
         val id = session
-        openWorkspaceScreen(WorkspaceScreen(this, refresh = { requestWorkspaces(JSONObject().put("action", "list")) }, select = { row ->
+        openWorkspaceScreen(WorkspaceScreen(this, refresh = ::refreshWorkspaces, select = { row ->
             // Pre-edit was committed before opening, and terminal input stays
             // disabled while browsing this screen.
             if (session != id || view !== terminal || imageTransfer != null || phase != "connected") {
@@ -335,12 +335,33 @@ class MainActivity : AppCompatActivity() {
                 requestWorkspaces(JSONObject().put("action", if (row.isAgent) "pane" else "workspace")
                     .put(if (row.isAgent) "pane_id" else "workspace_id", row.id))
             }
-        }, back = ::closeWorkspaces))
+        }, back = ::backFromWorkspaces, newWorkspace = {
+            if (workspaceRequest == null && !workspaceSelecting) {
+                workspaceScreen?.projectMode(true)
+                refreshWorkspaces()
+            }
+        }, create = { project ->
+            if (session == id && view === terminal && imageTransfer == null && phase == "connected") {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
+                requestWorkspaces(JSONObject().put("action", "create").put("project", project))
+            }
+        }))
         if (workspaceSelecting) workspaceScreen?.loading("Waiting for the switch to be confirmed…")
         else {
             workspaceScreen?.loading("Loading workspaces…")
             requestWorkspaces(JSONObject().put("action", "list"))
         }
+    }
+    private fun refreshWorkspaces() {
+        workspaceScreen?.let { requestWorkspaces(JSONObject().put("action", it.browseAction)) }
+    }
+    private fun backFromWorkspaces() {
+        if (workspaceScreen?.isProjectPicker == true && !workspaceSelecting) {
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
+            workspaceScreen?.projectMode(false)
+            workspaceScreen?.loading("Loading workspaces…")
+            refreshWorkspaces()
+        } else closeWorkspaces()
     }
     private fun openWorkspaceScreen(screen: WorkspaceScreen) {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
@@ -376,9 +397,14 @@ class MainActivity : AppCompatActivity() {
         val id = java.util.UUID.randomUUID().toString()
         request.put("id", id)
         workspaceRequest = id; workspaceAction = action
-        workspaceSelecting = action == "workspace" || action == "pane"
+        workspaceSelecting = action in listOf("workspace", "pane", "create")
         if (workspaceSelecting) terminal?.acceptingInput = false
-        if (!summary) screen?.loading(if (!workspaceSelecting) "Loading workspaces…" else "Switching…")
+        if (!summary) screen?.loading(when (action) {
+            "projects" -> "Loading projects…"
+            "create" -> "Creating workspace…"
+            "workspace", "pane" -> "Switching…"
+            else -> "Loading workspaces…"
+        })
         if (!enqueueFrame(PtyFrames.directory(request))) {
             if (summary) finishAgentSummary(null)
             else {
@@ -412,7 +438,7 @@ class MainActivity : AppCompatActivity() {
         agentSummary = summary; renderNotice()
         // An interactive list waits behind a pending read-only summary, never
         // races it on the bridge's single bounded API worker.
-        if (workspaceScreen != null) requestWorkspaces(JSONObject().put("action", "list"))
+        refreshWorkspaces()
     }
     private fun receiveWorkspaces(data: String) {
         try {
@@ -431,12 +457,15 @@ class MainActivity : AppCompatActivity() {
             }
             if (workspaceSelecting && error.isEmpty()) require(response.optBoolean("selected"))
             val wasSelecting = workspaceSelecting
+            val action = workspaceAction
             clearWorkspaceRequest()
             finishWorkspaceSelection()
             if (wasSelecting && phase == "connected") setNotice(if (error.isEmpty()) "Connected" else error.take(512), error.isNotEmpty())
             when {
+                !wasSelecting && workspaceScreen != null && action != workspaceScreen?.browseAction -> refreshWorkspaces()
                 error.isNotEmpty() -> workspaceScreen?.error(error.take(512))
-                response.optBoolean("selected") -> closeWorkspaces()
+                wasSelecting -> closeWorkspaces()
+                action == "projects" -> workspaceScreen?.displayProjects(ProjectDirectory.decode(response))
                 else -> workspaceScreen?.display(WorkspaceDirectory.rows(response))
             }
         } catch (_: Exception) {

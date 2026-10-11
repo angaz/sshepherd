@@ -41,6 +41,41 @@ class MainActivityTest {
         assertNull(request.get(activity))
         controller.pause().stop().destroy()
     }
+    @Test fun creationIsSerializedAndReturningFromPickerDiscardsLateProjectList() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun call(name: String, vararg args: Any?) = MainActivity::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }.invoke(activity, *args)
+        field("phase").set(activity, "connected")
+        val screen = WorkspaceScreen(activity, {}, {}, {})
+        call("openWorkspaceScreen", screen)
+        screen.projectMode(true)
+        call("requestWorkspaces", org.json.JSONObject().put("action", "projects"))
+        val pending = field("workspaceRequest").get(activity) as String
+        call("backFromWorkspaces")
+        assertFalse(screen.isProjectPicker)
+        assertEquals(pending, field("workspaceRequest").get(activity))
+        call("receiveWorkspaces", """{"id":"$pending","projects":["Empty (~)"]}""")
+        assertEquals("list", field("workspaceAction").get(activity))
+        val listRequest = field("workspaceRequest").get(activity) as String
+        call("receiveWorkspaces", """{"id":"$listRequest","workspaces":[],"agents":[]}""")
+        screen.projectMode(true)
+        val create = org.json.JSONObject().put("action", "create").put("project", "Empty (~)")
+        call("requestWorkspaces", create)
+        val creation = field("workspaceRequest").get(activity)
+        assertTrue(field("workspaceSelecting").getBoolean(activity))
+        call("requestWorkspaces", create)
+        assertEquals(creation, field("workspaceRequest").get(activity))
+        call("backFromWorkspaces")
+        assertNull(field("workspaceScreen").get(activity))
+        assertTrue(field("workspaceSelecting").getBoolean(activity))
+        call("receiveWorkspaces", """{"id":"$creation","error":"Timed out","uncertain":true}""")
+        assertEquals(creation, field("workspaceRequest").get(activity))
+        call("receiveWorkspaces", """{"id":"$creation","selected":true}""")
+        assertFalse(field("workspaceSelecting").getBoolean(activity))
+        controller.pause().stop().destroy()
+    }
     @Test fun fullScreenNavigationHidesImeKeepsSceneMountedAndBackRestoresIt() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
