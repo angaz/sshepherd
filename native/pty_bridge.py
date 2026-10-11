@@ -140,8 +140,8 @@ def project_target(project):
     """Match nix-configs' Ctrl+K helper without passing input to a shell."""
     if project == 'Empty (~)':
         return str(Path.home()), '~'
-    if (not isinstance(project, str) or not project or len(project.encode('utf-8')) > 256
-            or any(ord(c) < 32 or ord(c) == 127 for c in project)
+    if (not isinstance(project, str) or not project.strip() or len(project.encode('utf-8')) > 256
+            or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in project)
             or project.startswith('/') or any(p in ('', '.', '..') for p in project.split('/'))):
         raise ValueError('invalid project')
     root = (Path.home() / 'Documents').resolve(strict=True)

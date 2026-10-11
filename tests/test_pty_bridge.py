@@ -87,7 +87,8 @@ class Framing(unittest.TestCase):
             (root / 'group/worktree/.git').write_text('gitdir: elsewhere')
             (root / 'too/deep/repo/.git').mkdir(parents=True)
             (root / 'escape').symlink_to(Path(home), target_is_directory=True)
-            (root / 'bad\nname/.git').mkdir(parents=True)
+            for unsupported in ('bad\nname', 'bad\u0085name', ' ', '\u00a0'):
+                (root / unsupported / '.git').mkdir(parents=True)
             response = json.loads(bridge.directory_request(b'{"id":"p","action":"projects"}'))
             self.assertEqual(response['projects'], ['Empty (~)', 'alpha', 'group/worktree'])
             for project, cwd, label in [('alpha', root / 'alpha', 'alpha'), ('Empty (~)', Path(home), '~')]:
