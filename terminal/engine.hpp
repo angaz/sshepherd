@@ -16,6 +16,7 @@ public:
     void write(const uint8_t* bytes, size_t len);
     void resize(int cols, int rows, int cellWidth, int cellHeight);
     std::vector<uint8_t> frame();
+    std::vector<uint8_t> hyperlink(int x, int y);
     std::vector<uint8_t> takeReplies();
     std::optional<std::vector<uint8_t>> takeClipboard();
     std::vector<uint8_t> key(int androidCode, int mods, int action, const std::string& utf8, int consumedMods = 0);

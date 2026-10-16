@@ -9,6 +9,7 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -49,9 +50,11 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     private var hiddenHeaderRows = 0 // latched PTY padding, not overlay cropping
     private var cropHeaderRows = 0
     private var paneScale = 1f
-    private var touchId = -1
-    private var touchX = 0f
-    private var touchY = 0f
+    private val touch = TerminalTouch(ViewConfiguration.get(context).scaledTouchSlop, ::linkAt,
+        { action, x, y ->
+            if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, action, 1, x.toDouble(),
+                TerminalViewport.remoteY(y, cropHeaderRows, cellHeight, paneScale), 0))
+        }, { TerminalLinks.open(context, it, onMessage) }, { performClick() })
     private var deadAccent = 0
     private val blink = object : Runnable {
         override fun run() { if (engine != 0L && isAttachedToWindow) { invalidate(); postDelayed(this, 500) } }
@@ -99,8 +102,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         safely {
-            if (dirty) { snapshot = TerminalFrame.decode(GhosttyNative.frame(engine)); dirty = false }
-            val frame = snapshot ?: return
+            val frame = currentFrame()
             val hasHeader = TerminalViewport.hasMobileHeader(frame)
             if (hiddenHeaderRows == 0 && hasHeader) {
                 // Confirm the actual rendered layout instead of guessing from
@@ -277,29 +279,35 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         requestFocus()
         (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
+    private fun currentFrame(): TerminalFrame {
+        if (dirty || snapshot == null) {
+            snapshot = TerminalFrame.decode(GhosttyNative.frame(engine))
+            dirty = false
+        }
+        return snapshot!!
+    }
+    private fun linkAt(x: Float, y: Float): String? {
+        if (x < 0 || x >= width || y < 0 || y >= height ||
+            (composition.isNotEmpty() && y >= height - cellHeight)) return null
+        val frame = currentFrame()
+        var col = (x / cellWidth).toInt()
+        val row = (TerminalViewport.remoteY(y, cropHeaderRows, cellHeight, paneScale) / cellHeight).toInt()
+        if (col !in 0 until frame.cols || row !in 0 until frame.rows) return null
+        if (frame.cells[row * frame.cols + col].width == 0 && col > 0 &&
+            frame.cells[row * frame.cols + col - 1].width == 2) col--
+        if (frame.cells[row * frame.cols + col].flags and 16 != 0) return null
+        val explicit = GhosttyNative.hyperlink(engine, col, row).toString(Charsets.UTF_8)
+        return if (explicit.isNotEmpty()) TerminalLinks.webUrl(explicit) else TerminalLinks.at(frame, col, row)
+    }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (engine == 0L) return false
         safely {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    if (connection?.finishComposingText() == false) return true
-                    connection?.discardComposition()
-                    requestFocus(); touchId = event.getPointerId(0); touchX = event.x; touchY = event.y
-                    if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 0, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val index = event.findPointerIndex(touchId)
-                    if (index >= 0) {
-                        touchX = event.getX(index); touchY = event.getY(index)
-                        if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, 2, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (touchId != -1 && acceptingInput) sendRaw(GhosttyNative.mouse(engine, 1, 1, touchX.toDouble(), TerminalViewport.remoteY(touchY, cropHeaderRows, cellHeight, paneScale), 0))
-                    touchId = -1
-                    if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
-                }
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                if (connection?.finishComposingText() == false) return true
+                connection?.discardComposition()
+                requestFocus()
             }
+            touch.event(event)
         }
         return true
     }

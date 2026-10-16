@@ -30,6 +30,24 @@ void write(Engine& engine, const std::string& text) { engine.write(reinterpret_c
 std::string string(const std::vector<uint8_t>& bytes) { return {bytes.begin(), bytes.end()}; }
 int main() {
     {
+        Engine engine(20, 6);
+        const std::string uri = "https://example.com/caf\xc3\xa9?q=1#here";
+        const std::string osc = "\x1b]8;;" + uri + "\x1b\\Open link\x1b]8;;\x1b\\";
+        for (auto c : osc) engine.write(reinterpret_cast<const uint8_t*>(&c), 1);
+        assert(string(engine.hyperlink(0, 0)) == uri);
+        assert(string(engine.hyperlink(8, 0)) == uri);
+        assert(engine.hyperlink(9, 0).empty());
+        assert(engine.hyperlink(-1, 0).empty() && engine.hyperlink(20, 0).empty());
+        write(engine, "\r\x1b[2K");
+        assert(engine.hyperlink(0, 0).empty());
+        write(engine, "https://example.com/long-path");
+        auto f = frame(engine);
+        assert((f.cells[0].flags & 128) && !(f.cells[20].flags & 128));
+        write(engine, "\r\nnext line");
+        assert(!(frame(engine).cells[20].flags & 128));
+        std::cout << "PASS OSC 8 hyperlink lookup, erase, fragmented input and soft wrap metadata\n";
+    }
+    {
         Engine engine(80, 24);
         write(engine, "hello\x1b[1;38;2;12;34;56;48;2;65;43;21mX\x1b[0m");
         auto f = frame(engine);

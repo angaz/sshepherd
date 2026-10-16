@@ -12,6 +12,7 @@ public final class GhosttyNative {
     public static native void write(long id, byte[] bytes);
     public static native void resize(long id, int cols, int rows, int cw, int ch);
     public static native byte[] frame(long id);
+    public static native byte[] hyperlink(long id, int x, int y);
     public static native byte[] replies(long id);
     public static native byte[] clipboard(long id);
     public static native byte[] key(long id, int code, int mods, int consumedMods, int action, byte[] text);
@@ -36,6 +37,9 @@ public final class GhosttyNative {
         if (clipboard(id) != null) throw new AssertionError("Clipboard not drained");
         write(id, "\u001b]52;c;?\u0007".getBytes(StandardCharsets.UTF_8));
         if (replies(id).length != 0 || clipboard(id) != null) throw new AssertionError("Clipboard read leaked");
+        write(id, "\u001b[H\u001b]8;;https://example.com/café\u0007Open\u001b]8;;\u0007".getBytes(StandardCharsets.UTF_8));
+        if (!new String(hyperlink(id, 0, 0), StandardCharsets.UTF_8).equals("https://example.com/café")) throw new AssertionError("Hyperlink URI");
+        if (hyperlink(id, -1, 0).length != 0) throw new AssertionError("Hyperlink bounds");
         destroy(id);
         destroy(id); // idempotent close; stale handles must not cause use-after-free
         try { frame(id); throw new AssertionError("Stale handle accepted"); }

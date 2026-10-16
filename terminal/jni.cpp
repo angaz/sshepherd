@@ -52,6 +52,9 @@ JNI_METHOD(void) Java_io_angaz_sshepherd_GhosttyNative_resize(JNIEnv* env, jclas
 JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_frame(JNIEnv* env, jclass, jlong id) {
     GUARD(return output(env, get(id).frame());, nullptr)
 }
+JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_hyperlink(JNIEnv* env, jclass, jlong id, jint x, jint y) {
+    GUARD(return output(env, get(id).hyperlink(x, y));, nullptr)
+}
 JNI_METHOD(jbyteArray) Java_io_angaz_sshepherd_GhosttyNative_replies(JNIEnv* env, jclass, jlong id) {
     GUARD(return output(env, get(id).takeReplies());, nullptr)
 }

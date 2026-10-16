@@ -163,6 +163,21 @@ bool Engine::mode(int number) {
     GhosttyTerminalModeConfig value{ghostty_mode_new(uint16_t(number), false), false};
     return ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &value) == GHOSTTY_SUCCESS && value.value;
 }
+std::vector<uint8_t> Engine::hyperlink(int x, int y) {
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return {};
+    GhosttyPoint point{};
+    point.tag = GHOSTTY_POINT_TAG_VIEWPORT;
+    point.value.coordinate = {uint16_t(x), uint32_t(y)};
+    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    check(ghostty_terminal_grid_ref(terminal, point, &ref));
+    std::vector<uint8_t> uri(8192);
+    size_t len = 0;
+    auto rc = ghostty_grid_ref_hyperlink_uri(&ref, uri.data(), uri.size(), &len);
+    if (rc == GHOSTTY_OUT_OF_SPACE) return {}; // Untrusted, bounded URI.
+    check(rc);
+    uri.resize(len);
+    return uri;
+}
 std::vector<uint8_t> Engine::frame() {
     check(ghostty_render_state_update(render, terminal));
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
@@ -180,6 +195,10 @@ std::vector<uint8_t> Engine::frame() {
     word(result, color(colors.cursor_has_value ? colors.cursor : colors.foreground));
     check(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iterator));
     while (ghostty_render_state_row_iterator_next(iterator)) {
+        GhosttyRow row{};
+        bool wrapped = false;
+        check(ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &row));
+        check(ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wrapped));
         check(ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells));
         while (ghostty_render_state_row_cells_next(cells)) {
             GhosttyCell raw{};
@@ -193,7 +212,7 @@ std::vector<uint8_t> Engine::frame() {
             (void)ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg);
             if (style.inverse) std::swap(fg, bg);
             uint32_t flags = (style.bold ? 1 : 0) | (style.italic ? 2 : 0) | (style.underline ? 4 : 0)
-                | (style.strikethrough ? 8 : 0) | (style.invisible ? 16 : 0) | (style.faint ? 32 : 0) | (style.overline ? 64 : 0);
+                | (style.strikethrough ? 8 : 0) | (style.invisible ? 16 : 0) | (style.faint ? 32 : 0) | (style.overline ? 64 : 0) | (wrapped ? 128 : 0);
             char text[1024];
             GhosttyBuffer buffer{reinterpret_cast<uint8_t*>(text), sizeof(text), 0};
             auto rc = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8, &buffer);

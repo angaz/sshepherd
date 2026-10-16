@@ -3,6 +3,7 @@ package io.angaz.sshepherd
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+/** Flags 1..64 are visual attributes; 128 marks membership in a soft-wrapped row. */
 internal data class TerminalCell(val width: Int, val flags: Int, val foreground: Int, val background: Int, val text: String)
 internal data class TerminalFrame(
     val cols: Int, val rows: Int, val cursorX: Int, val cursorY: Int,

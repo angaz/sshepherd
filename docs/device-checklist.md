@@ -7,6 +7,7 @@ Automated native-engine/JNI and Robolectric tests do not replace on-device check
 - [ ] Save shared token, relaunch and connect; Forget token makes the next connection request credentials. Confirm the server trust notice.
 - [ ] Connect through mesh IPv6 UDP 7443 and verify existing `default` Herdr state.
 - [ ] Tap and drag tab/pane controls and mouse-aware TUIs. Exactly one press/release pair, correctly aligned to cells; no stuck mouse on cancellation.
+- [ ] Tap plain HTTP(S)/www URLs and OSC 8 labeled web links: the phone's browser/URL handler opens the destination once, without clicking the remote app. Check soft-wrapped URLs, punctuation, wide/combining characters, the cropped mobile header and scaled legacy overlays. Drag from links, long-press, cancel a touch and use multiple fingers: no browser launch or stuck remote mouse. Unsafe non-web OSC 8 targets must not launch an app; a missing browser should show a message.
 - [ ] Test Gboard and the preferred IME: suggestions, swipe typing, committed text, composition, Unicode/emoji, backspace at an empty local editor, Enter while composing, cancellation and paste. Commands must not be automatically capitalized.
 - [ ] Take a screenshot and inspect the app-switcher preview: terminal/UI content should be visible, not blank.
 - [ ] Test physical keyboard: Ctrl+C, Alt terminal shortcuts, AltGr/layout characters, dead keys, Shift+Tab, arrows in normal/application modes and Kitty-aware apps.
