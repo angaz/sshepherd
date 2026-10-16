@@ -21,7 +21,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildTypes { release { isMinifyEnabled = false } }
     packaging { jniLibs.useLegacyPackaging = false }
-    testOptions { unitTests.isIncludeAndroidResources = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.systemProperty("java.library.path", rootProject.file("../.deps").absolutePath)
+        }
+    }
 }
 // Native Android Views + Material Components; no web runtime.
 dependencies {
