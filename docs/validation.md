@@ -27,7 +27,11 @@ APK/build/cache directories are ignored by Git. Native source, pinned dependency
 
 An isolated installed Herdr 0.9.4 client was fed an OSC 8 link labeled `Open example.com` with destination `https://example.com`. With default mouse capture, captured client output rendered the label but omitted the destination. Repeating with `[ui].mouse_capture = false` emitted the destination. In Herdr's `src/client/state.rs`, `try_present_frame_to` explicitly clears `frame_data.hyperlinks` when `shell_mouse_capture_preference` is enabled, to prevent host Ctrl-click from bypassing plugins.
 
-The native-backed Android link test passes when OSC 8 metadata is present. This narrows the reproduced loss to Herdr's presentation policy, not URI decoding or Android intent dispatch. No shared Herdr configuration was changed, no Herdr fix was deployed, and phone behavior is not yet validated. A fix must preserve mouse controls while allowing this frontend to receive link metadata.
+The native-backed Android link test passes when OSC 8 metadata is present. The API fallback now retrieves the destination using existing `pane.link.activate`, without changing Herdr's configuration or mouse-capture policy. Herdr's `pane.read`/`pane.get` revisions are placeholders in this version, so a passive `pane.copy_motion` query supplies the real content-revision token used by activation; it does not move the cursor or enter copy mode. A visible-only text read verifies the tapped row without scrolling or history harvesting.
+
+`SSHEPHERD_TEST_HERDR_LINKS=1 python3 -m unittest discover -s tests -p test_herdr_links.py -v` starts an isolated real Herdr behind the actual framed PTY bridge. With mouse capture enabled it verifies the terminal stream omits the destination, the link API returns it, and subsequent mouse press/release still reaches the pane. It never controls the user's existing session.
+
+Bridge tests cover geometry/text/focus/scroll/revision rejection, duplicate rows, wide-cell columns, missing APIs, plugin handling and uncertain activation (never retried). Native-backed Canvas tests cover stripped-label API requests, header-adjusted coordinates, HTTP(S) intent dispatch, mouse fallback, plugin/unsafe/error replies, stale replies after input/content/lifecycle changes, drags and cancellation. No Herdr changes are deployed. Physical-phone behavior remains a manual check; the API fallback deliberately excludes split/unrecognized layouts and lines above its 768-byte matching limit.
 
 ## Manual checks
 

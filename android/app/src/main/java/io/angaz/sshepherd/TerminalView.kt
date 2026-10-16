@@ -23,9 +23,11 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     var onGeometry: (Int, Int) -> Unit = { _, _ -> }
     var onFailure: (String) -> Unit = {}
     var onMessage: (String) -> Unit = {}
+    internal var onLinkLookup: ((org.json.JSONObject, (org.json.JSONObject?) -> Unit) -> Boolean)? = null
+    private var gestureEpoch = 0L
     var onClipboard: (ByteArray) -> Unit = {}
     var acceptingInput = false
-        set(value) { if (!value) connection?.discardComposition(); field = value }
+        set(value) { if (!value) { connection?.discardComposition(); gestureEpoch++ }; field = value }
     var ctrlLatched = false
         set(value) {
             if (value && !field) { connection?.finishComposingText(); connection?.discardComposition() }
@@ -50,11 +52,11 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     private var hiddenHeaderRows = 0 // latched PTY padding, not overlay cropping
     private var cropHeaderRows = 0
     private var paneScale = 1f
-    private val touch = TerminalTouch(ViewConfiguration.get(context).scaledTouchSlop, ::linkAt,
+    private val touch = TerminalTouch(ViewConfiguration.get(context).scaledTouchSlop, ::touchTarget,
         { action, x, y ->
             if (acceptingInput) sendRaw(GhosttyNative.mouse(engine, action, 1, x.toDouble(),
                 TerminalViewport.remoteY(y, cropHeaderRows, cellHeight, paneScale), 0))
-        }, { TerminalLinks.open(context, it, onMessage) }, { performClick() })
+        }, { openTouchTarget(it) }, { performClick() })
     private var deadAccent = 0
     private val blink = object : Runnable {
         override fun run() { if (engine != 0L && isAttachedToWindow) { invalidate(); postDelayed(this, 500) } }
@@ -207,6 +209,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
                 keys(KeyEvent.KEYCODE_DPAD_RIGHT, edit.protectedPoints)
             }
             keys(KeyEvent.KEYCODE_FORWARD_DEL, edit.extraAfter)
+            if (bytes.size() > 0) gestureEpoch++
             accepted = bytes.size() == 0 || onInput(bytes.toByteArray())
             if (accepted) consumeCtrl()
         }
@@ -214,6 +217,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
     }
     private fun consumeCtrl() { if (ctrlLatched) { ctrlLatched = false; onCtrlConsumed() } }
     fun sendRaw(bytes: ByteArray) {
+        if (bytes.isNotEmpty()) gestureEpoch++
         if (acceptingInput && bytes.isNotEmpty()) onInput(bytes)
     }
     fun accessory(code: Int, mods: Int = 0) = safely {
@@ -286,6 +290,63 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         }
         return snapshot!!
     }
+    private fun touchTarget(x: Float, y: Float): String? = linkAt(x, y) ?: apiTarget(x, y)
+
+    private fun apiTarget(x: Float, y: Float): String? {
+        if (onLinkLookup == null || !acceptingInput || engine == 0L || composition.isNotEmpty() ||
+            x < 0 || x >= width || y < 0 || y >= height) return null
+        val frame = currentFrame()
+        // Only the normal borderless mobile pane: overlays and split layouts
+        // cannot safely use server-layout coordinates. The bridge also checks.
+        if (!TerminalViewport.hasMobileHeader(frame)) return null
+        var col = (x / cellWidth).toInt()
+        val row = (TerminalViewport.remoteY(y, cropHeaderRows, cellHeight, paneScale) / cellHeight).toInt()
+        if (col !in 0 until frame.cols || row !in 2 until frame.rows) return null
+        if (frame.cells[row * frame.cols + col].width == 0 && col > 0 &&
+            frame.cells[row * frame.cols + col - 1].width == 2) col--
+        val cell = frame.cells[row * frame.cols + col]
+        if (cell.flags and 16 != 0) return null
+        val line = frame.cells.subList(row * frame.cols, (row + 1) * frame.cols).joinToString("") {
+            if (it.width == 0) "" else if (it.flags and 16 != 0) " " else it.text.ifEmpty { " " }
+        }.trimEnd(' ')
+        if (line.isBlank() || line.toByteArray(Charsets.UTF_8).size > 768) return null
+        val record = org.json.JSONObject().put("line", line).put("col", col).put("row", row - 2)
+            .put("cols", frame.cols).put("rows", frame.rows - 2).toString()
+        // Reserve room for the Activity's request ID/action in the 1024-byte
+        // frame, including JSON escaping (not just raw displayed UTF-8).
+        return if (record.toByteArray(Charsets.UTF_8).size <= 900) "\u0000$record" else null
+    }
+
+    private fun openTouchTarget(target: String) {
+        if (!target.startsWith("\u0000")) { TerminalLinks.open(context, target, onMessage); return }
+        val record = org.json.JSONObject(target.substring(1))
+        val x = (record.getInt("col") + 0.5f) * cellWidth
+        val y = (record.getInt("row") + 2 - cropHeaderRows + 0.5f) * cellHeight * paneScale
+        val epoch = gestureEpoch
+        val mouseY = TerminalViewport.remoteY(y, cropHeaderRows, cellHeight, paneScale)
+        // Encode a fallback click now, but never replay it after another input,
+        // viewport change or a failed/uncertain activation.
+        val press = GhosttyNative.mouse(engine, 0, 1, x.toDouble(), mouseY, 0)
+        val release = GhosttyNative.mouse(engine, 1, 1, x.toDouble(), mouseY, 0)
+        val submitted = onLinkLookup?.invoke(record) { result ->
+            if (engine != 0L && acceptingInput && gestureEpoch == epoch && apiTarget(x, y) == target && result != null) {
+                when {
+                    result.optBoolean("handled") -> Unit // Herdr plugin already handled it.
+                    !result.isNull("url") -> {
+                        val url = TerminalLinks.webUrl(result.optString("url"))
+                        if (url != null) TerminalLinks.open(context, url, onMessage)
+                        else onMessage("Only HTTP(S) links can be opened")
+                    }
+                    result.optBoolean("fallback") -> {
+                        if (result.optBoolean("unavailable")) onMessage("Herdr link API unavailable; forwarded as a normal tap")
+                        sendRaw(press + release)
+                    }
+                }
+            }
+        } == true
+        if (!submitted) sendRaw(press + release)
+    }
+
     private fun linkAt(x: Float, y: Float): String? {
         if (x < 0 || x >= width || y < 0 || y >= height ||
             (composition.isNotEmpty() && y >= height - cellHeight)) return null
@@ -303,6 +364,7 @@ class TerminalView(context: Context) : View(context), AutoCloseable {
         if (engine == 0L) return false
         safely {
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                gestureEpoch++
                 if (connection?.finishComposingText() == false) return true
                 connection?.discardComposition()
                 requestFocus()

@@ -79,6 +79,75 @@ class Framing(unittest.TestCase):
             response = json.loads(bridge.directory_request(b'{"id":"bad","action":"pane.close"}'))
             self.assertTrue(response['error']); rpc.assert_not_called()
 
+    def link_fixture(self, result=None, text='Open example.com\n'):
+        request = {'id': 'link1', 'action': 'link', 'line': 'Open example.com',
+                   'col': 4, 'row': 0, 'cols': 60, 'rows': 28}
+        snapshot = {'focused_pane_id': 'w1:p1', 'focused_tab_id': 'w1:t1',
+                    'panes': [{'pane_id': 'w1:p1', 'scroll': {'offset_from_bottom': 0}}],
+                    'layouts': [{'tab_id': 'w1:t1', 'panes': [{'pane_id': 'w1:p1',
+                                 'rect': {'x': 0, 'y': 0, 'width': 60, 'height': 28}}]}]}
+        responses = [{'snapshot': snapshot}, {'content_revision': 42},
+                     {'read': {'pane_id': 'w1:p1', 'text': text, 'truncated': False}},
+                     {'snapshot': snapshot}, result or {'url': 'https://example.com', 'handled': False}]
+        return request, responses
+
+    def test_link_activation_checks_geometry_text_revision_scroll_and_returns_url(self):
+        request, responses = self.link_fixture()
+        with patch.object(bridge, 'herdr_request', side_effect=responses) as rpc:
+            reply = json.loads(bridge.directory_request(json.dumps(request).encode()))
+        self.assertEqual(reply['error'], '')
+        self.assertEqual(reply['link'], {'url': 'https://example.com', 'handled': False, 'fallback': False})
+        self.assertEqual(rpc.call_args_list[-1].args, ('pane.link.activate', {
+            'pane_id': 'w1:p1', 'viewport_row': 0, 'col': 4,
+            'content_revision': 42, 'offset_from_bottom': 0}))
+        self.assertEqual(rpc.call_args_list[1].args[0], 'pane.copy_motion')
+        self.assertEqual(rpc.call_args_list[2].args[1]['source'], 'visible')
+
+    def test_link_activation_no_link_and_plugin_handled_are_distinct(self):
+        for result, fallback in [({'url': None, 'handled': False}, True),
+                                 ({'url': 'https://example.com', 'handled': True}, False)]:
+            request, responses = self.link_fixture(result)
+            with patch.object(bridge, 'herdr_request', side_effect=responses):
+                link = json.loads(bridge.directory_request(json.dumps(request).encode()))['link']
+            self.assertEqual(link['fallback'], fallback)
+            self.assertEqual(link['handled'], result['handled'])
+
+    def test_link_rejects_stale_invalid_and_uncertain_targets_without_retry(self):
+        import copy
+        for case in ('text', 'revision', 'focus', 'scroll', 'geometry', 'activation', 'malformed'):
+            request, responses = self.link_fixture()
+            if case == 'text': responses[2]['read']['text'] = 'Changed label\n'
+            if case == 'revision': responses[1]['content_revision'] = 43
+            if case == 'focus':
+                responses[3] = copy.deepcopy(responses[3]); responses[3]['snapshot']['focused_pane_id'] = 'w2:p1'
+            if case == 'scroll':
+                responses[3] = copy.deepcopy(responses[3]); responses[3]['snapshot']['panes'][0]['scroll']['offset_from_bottom'] = 1
+            if case == 'geometry': request['cols'] = 59
+            if case == 'activation': responses[-1] = TimeoutError()
+            if case == 'malformed': request['col'] = True
+            with self.subTest(case=case), patch.object(bridge, 'herdr_request', side_effect=responses) as rpc:
+                reply = json.loads(bridge.directory_request(json.dumps(request).encode()))
+                self.assertTrue(reply['error']); self.assertNotIn('link', reply)
+                activations = [c for c in rpc.call_args_list if c.args[0] == 'pane.link.activate']
+                self.assertEqual(len(activations), 1 if case == 'activation' else 0)
+
+    def test_missing_link_api_preserves_mouse_without_retrying_activation(self):
+        request, responses = self.link_fixture()
+        responses[1] = bridge.ApiRejected('unknown method')
+        with patch.object(bridge, 'herdr_request', side_effect=responses) as rpc:
+            reply = json.loads(bridge.directory_request(json.dumps(request).encode()))
+        self.assertEqual(reply['link'], {'fallback': True, 'unavailable': True})
+        self.assertEqual(rpc.call_count, 2)
+
+    def test_link_duplicate_rows_use_verified_viewport_row_and_wide_cell_column(self):
+        request, responses = self.link_fixture(text='界 Open example.com\n界 Open example.com\n')
+        request.update(line='界 Open example.com', row=1, col=5)
+        with patch.object(bridge, 'herdr_request', side_effect=responses) as rpc:
+            reply = json.loads(bridge.directory_request(json.dumps(request).encode()))
+        self.assertEqual(reply['error'], '')
+        self.assertEqual(rpc.call_args.args[1]['viewport_row'], 1)
+        self.assertEqual(rpc.call_args.args[1]['col'], 5)
+
     def test_projects_match_ctrl_k_discovery_and_create_without_shell(self):
         with tempfile.TemporaryDirectory() as home, patch.object(bridge.Path, 'home', return_value=Path(home)):
             root = Path(home) / 'Documents'

@@ -15,6 +15,32 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class MainActivityTest {
     private fun children(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { children(view.getChildAt(it)) } else emptyList()
+    @Test fun linkRepliesAreRequestScopedAndNeverTreatedAsDirectorySelections() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun receive(data: String) = MainActivity::class.java.getDeclaredMethod("receiveWorkspaces", String::class.java)
+            .apply { isAccessible = true }.invoke(activity, data)
+        var result: org.json.JSONObject? = null
+        val callback: (org.json.JSONObject?) -> Unit = { result = it }
+        field("workspaceRequest").set(activity, "link-1")
+        field("workspaceAction").set(activity, "link")
+        field("linkCallback").set(activity, callback)
+        receive("""{"id":"older","link":{"url":"https://wrong.example"}}""")
+        assertNull(result); assertEquals("link-1", field("workspaceRequest").get(activity))
+        receive("""{"id":"link-1","link":{"url":"https://example.com","handled":false}}""")
+        assertEquals("https://example.com", result?.getString("url"))
+        assertNull(field("workspaceRequest").get(activity)); assertNull(field("linkCallback").get(activity))
+        result = null
+        receive("""{"id":"link-1","link":{"url":"https://duplicate.example"}}""")
+        assertNull(result)
+        field("workspaceRequest").set(activity, "link-2")
+        field("workspaceAction").set(activity, "link")
+        field("linkCallback").set(activity, callback)
+        receive("""{"id":"link-2","error":"Stale content"}""")
+        assertNull(result); assertNull(field("linkCallback").get(activity))
+        controller.pause().stop().destroy()
+    }
     @Test fun leavingScreenOrUncertainReplyKeepsSelectionGuardUntilConfirmation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()

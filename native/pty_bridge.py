@@ -108,6 +108,10 @@ class ApiRejected(ValueError):
     pass
 
 
+class LinkApiUnavailable(Exception):
+    pass
+
+
 def herdr_request(method, params):
     # Match the default session launched below, not an inherited pane's socket.
     path = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'herdr/herdr.sock'
@@ -205,6 +209,70 @@ def scratchpad_snapshot():
     return {'pane_id': pane, 'text': text, 'truncated': truncated}
 
 
+def activate_link(request):
+    """Resolve only a verified cell in a full-width mobile pane.
+
+    API layout coordinates describe the server's layout, not this client's
+    mobile header/crop. Verify both the borderless geometry and displayed row
+    before using the phone's header-adjusted cell; mismatches fail closed.
+    """
+    def passive(method, params):
+        try:
+            return herdr_request(method, params)
+        except (OSError, ApiRejected) as error:
+            raise LinkApiUnavailable() from error
+
+    line, col = request.get('line'), request.get('col')
+    row, cols, rows = request.get('row'), request.get('cols'), request.get('rows')
+    if (not isinstance(line, str) or not line.strip() or len(line.encode()) > 768
+            or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in line)
+            or any(type(n) is not int for n in (col, row, cols, rows))
+            or not 2 <= cols <= 500 or not 1 <= rows <= 300
+            or not 0 <= col < cols or not 0 <= row < rows):
+        raise ValueError('invalid link cell')
+    snapshot = passive('session.snapshot', {})['snapshot']
+    pane = snapshot['focused_pane_id']
+    layout = next(l for l in snapshot['layouts'] if l['tab_id'] == snapshot['focused_tab_id'])
+    if len(layout['panes']) != 1:
+        return {'fallback': True}
+    rect = layout['panes'][0]['rect']
+    if (layout['panes'][0]['pane_id'] != pane
+            or rect != {'x': 0, 'y': 0, 'width': cols, 'height': rows}):
+        raise ValueError('pane geometry changed')
+    info = next(p for p in snapshot['panes'] if p['pane_id'] == pane)
+    offset = info['scroll']['offset_from_bottom']
+    # pane.read.revision and pane.get.revision are placeholders in Herdr 0.9.4.
+    # This passive copy-motion query returns the real content_seq token; it
+    # does NOT enter copy mode, move the cursor or change the selection.
+    revision = passive('pane.copy_motion', {
+        'pane_id': pane, 'cursor': {'row': 0, 'col': 0}, 'motion': 'first_non_blank'
+    })['content_revision']
+    if type(revision) is not int or revision < 0 or revision % 2:
+        raise ValueError('unstable pane')
+    read = passive('pane.read', {'pane_id': pane, 'source': 'visible', 'format': 'text'})['read']
+    if read['pane_id'] != pane or read.get('truncated'):
+        raise ValueError('invalid pane read')
+    visible_rows = read['text'].split('\n')
+    if row >= len(visible_rows) or visible_rows[row].rstrip(' ') != line.rstrip(' '):
+        raise ValueError('changed link row')
+    # Recheck focus/scroll before activation, which additionally checks the
+    # real content revision atomically. Never retry activation: plugins may run.
+    current = passive('session.snapshot', {})['snapshot']
+    now = next(p for p in current['panes'] if p['pane_id'] == pane)
+    if (current['focused_pane_id'] != pane or current['focused_tab_id'] != snapshot['focused_tab_id']
+            or now['scroll']['offset_from_bottom'] != offset
+            or current['layouts'] != snapshot['layouts']):
+        raise ValueError('pane changed')
+    result = herdr_request('pane.link.activate', {
+        'pane_id': pane, 'viewport_row': row, 'col': col,
+        'content_revision': revision, 'offset_from_bottom': offset
+    })
+    url, handled = result.get('url'), result.get('handled')
+    if type(handled) is not bool or (url is not None and (not isinstance(url, str) or len(url) > 8192)):
+        raise ValueError('invalid link response')
+    return {'url': url, 'handled': handled, 'fallback': url is None and not handled}
+
+
 def directory_request(body):
     request = json.loads(body)
     request_id = request.get('id')
@@ -214,7 +282,9 @@ def directory_request(body):
     focus_submitted = False
     try:
         action = request.get('action')
-        if action == 'summary':
+        if action == 'link':
+            reply['link'] = activate_link(request)
+        elif action == 'summary':
             agents = herdr_request('session.snapshot', {})['snapshot']['agents']
             if not isinstance(agents, list) or len(agents) > 4096 or any(not isinstance(agent, dict) for agent in agents):
                 raise ValueError('invalid agents')
@@ -260,8 +330,13 @@ def directory_request(body):
             reply['selected'] = True
         else:
             raise ValueError('unsupported action')
-    except (OSError, ValueError, KeyError, TypeError, RecursionError) as error:
-        reply = {'id': request_id, 'error': 'Herdr workspace API unavailable or selection no longer exists. Refresh and retry.',
+    except LinkApiUnavailable:
+        # No activation was submitted. An old/unavailable API must not disable
+        # ordinary TUI clicks. The phone still checks its saved gesture target.
+        reply['link'] = {'fallback': True, 'unavailable': True}
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, StopIteration) as error:
+        reply = {'id': request_id, 'error': ('Link lookup unavailable or content changed. Tap again.' if request.get('action') == 'link'
+                                           else 'Herdr workspace API unavailable or selection no longer exists. Refresh and retry.'),
                  'uncertain': focus_submitted and not isinstance(error, ApiRejected)}
     payload = json.dumps(reply).encode()
     if len(payload) > MAX_DIRECTORY:
@@ -351,7 +426,7 @@ def main():
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size(body))
                 elif kind == 6:
                     request = json.loads(body)
-                    if request.get('action') in ('workspace', 'pane', 'create') and pending:
+                    if request.get('action') in ('workspace', 'pane', 'create', 'link') and pending:
                         # Do not let a separate API socket overtake earlier
                         # keyboard/composition bytes waiting for the PTY.
                         deferred_focus = body
@@ -374,7 +449,7 @@ def main():
                     deferred_focus = None
                 elif time.monotonic() >= focus_deadline:
                     request_id = json.loads(deferred_focus)['id']
-                    write_output(2, json.dumps({'id': request_id, 'error': 'Terminal input is still pending; selection was not applied.'}).encode())
+                    write_output(2, json.dumps({'id': request_id, 'error': 'Terminal input is still pending; request was not applied.'}).encode())
                     deferred_focus = None
             selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0))
             for key, events in selector.select(.1 if deferred_focus is not None else None):

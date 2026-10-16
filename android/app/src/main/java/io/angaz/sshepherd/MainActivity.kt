@@ -311,6 +311,21 @@ class MainActivity : AppCompatActivity() {
         }
         controls = TerminalControls(this, primary, accessories, view::showKeyboard)
         content.addView(controls, LinearLayout.LayoutParams(-1, -2))
+        view.onLinkLookup = lookup@ { request, callback ->
+            if (away || destroyed || phase != "connected" || view !== terminal ||
+                workspaceScreen != null || scratchpadScreen != null || imageTransfer != null) return@lookup false
+            if (workspaceRequest != null) {
+                setNotice("Link lookup busy. Tap again.", true)
+                return@lookup true
+            }
+            val lookupSession = session
+            linkCallback = { result ->
+                if (!away && !destroyed && hasWindowFocus() && view === terminal && session == lookupSession &&
+                    phase == "connected" && workspaceScreen == null && scratchpadScreen == null) callback(result)
+            }
+            requestWorkspaces(request.put("action", "link"))
+            true
+        }
         view.onInput = ::enqueueInput
         view.onGeometry = { _, _ -> resizePending = true; flushInput() }
         view.onFailure = { message -> disconnect(); setNotice(message, true) }
@@ -362,7 +377,9 @@ class MainActivity : AppCompatActivity() {
         terminal?.acceptingInput = phase == "connected" && imageTransfer == null && !workspaceSelecting && workspaceScreen == null
         terminal?.requestFocus()
     }
+    private var linkCallback: ((JSONObject?) -> Unit)? = null
     private fun clearWorkspaceRequest() {
+        linkCallback = null
         workspaceTimeout?.let { handler.removeCallbacks(it) }
         workspaceTimeout = null; workspaceRequest = null; workspaceAction = null
     }
@@ -436,10 +453,11 @@ class MainActivity : AppCompatActivity() {
     private fun requestWorkspaces(request: JSONObject) {
         val action = request.getString("action")
         val summary = action == "summary"
+        val link = action == "link"
         val screen = workspaceScreen
         val scratchpad = scratchpadScreen
         val scrollback = action == "scrollback"
-        if (screen == null && !summary && !(scrollback && scratchpad != null)) return
+        if (screen == null && !summary && !link && !(scrollback && scratchpad != null)) return
         if (workspaceRequest != null) return
         if (phase != "connected") {
             if (!summary) screen?.error("Not connected. Reconnect and open the list again.")
@@ -464,6 +482,7 @@ class MainActivity : AppCompatActivity() {
                 clearWorkspaceRequest(); finishWorkspaceSelection()
                 screen?.error("Input queue full. Try refreshing.")
                 if (scrollback) scratchpad?.error("Input queue full. Tap Retry.")
+                if (link) setNotice("Link lookup could not be sent. Tap again.", true)
             }
             return
         }
@@ -479,9 +498,10 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     clearWorkspaceRequest(); workspaceScreen?.error("Workspace request timed out. Refresh to retry.")
                     scratchpadScreen?.error("Scrollback request timed out. Tap Retry.")
+                    if (link) setNotice("Link lookup timed out. Tap again.", true)
                 }
             }
-        }.also { handler.postDelayed(it, 8000) }
+        }.also { handler.postDelayed(it, if (link) 12000 else 8000) }
     }
     private fun finishWorkspaceSelection() {
         workspaceSelecting = false
@@ -500,6 +520,13 @@ class MainActivity : AppCompatActivity() {
             val response = JSONObject(data)
             if (response.optString("id") != workspaceRequest) return
             val error = response.optString("error")
+            if (workspaceAction == "link") {
+                val callback = linkCallback
+                clearWorkspaceRequest()
+                if (error.isNotEmpty()) setNotice(error.take(512), true)
+                else callback?.invoke(response.getJSONObject("link"))
+                return
+            }
             if (workspaceAction == "summary") {
                 finishAgentSummary(if (error.isEmpty()) AgentSummary.decode(response.getJSONObject("summary")) else null)
                 return
