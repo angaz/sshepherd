@@ -1,8 +1,13 @@
-# SSHepherd — native Android
+# SSHepherd — native Android and iOS
 
 A **native Android** client for Herdr terminals. Kotlin Android Views with Material 3 components, an Android Canvas terminal renderer and the **native libghostty-vt** engine. **No WebView, HTML/JavaScript UI, WASM, Flutter or browser runtime.**
 
-## Install
+A native **SwiftUI/UIKit iPhone implementation** is available alongside Android.
+See [iOS build, setup and platform differences](docs/ios.md). It uses standard
+SwiftNIO SSH rather than Android's Eternal transport; the existing Android
+implementation and instructions below are unchanged.
+
+## Install (Android)
 
 APK: `android/app/build/outputs/apk/debug/app-debug.apk`
 

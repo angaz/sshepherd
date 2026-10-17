@@ -13,3 +13,17 @@ core
 core.*
 # Original supplied archive; extracted launcher resources are tracked.
 /sshepherd-android-icons.zip
+
+# Apple dependency/build products and per-developer Xcode state.
+**/.build/
+**/.swiftpm/
+**/xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xcframework/
+.DS_Store
+# Device exports and signing configuration are not public source.
+*.pub
+*.mobileprovision
+*.p12
+Signing.local.xcconfig

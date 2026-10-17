@@ -229,6 +229,11 @@ std::vector<uint8_t> Engine::frame() {
 std::vector<uint8_t> Engine::key(int code, int mods, int action, const std::string& utf8, int consumedMods) {
     if (utf8.size() > 64 || action < 0 || action > 2) throw std::invalid_argument("Invalid key event");
     ghostty_key_encoder_setopt_from_terminal(keyEncoder, terminal);
+#if defined(__APPLE__)
+    // Host tests use Android key codes on macOS; preserve terminal Alt behavior.
+    const GhosttyOptionAsAlt optionAsAlt = GHOSTTY_OPTION_AS_ALT_TRUE;
+    ghostty_key_encoder_setopt(keyEncoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &optionAsAlt);
+#endif
     ghostty_key_event_set_action(keyEvent, GhosttyKeyAction(action));
     ghostty_key_event_set_key(keyEvent, androidKey(code));
     // AltGr's synthetic Ctrl/Alt are layout selectors, not terminal chords.
@@ -240,6 +245,27 @@ std::vector<uint8_t> Engine::key(int code, int mods, int action, const std::stri
     ghostty_key_event_set_utf8(keyEvent, utf8.data(), utf8.size());
     uint32_t unshifted = code >= 29 && code <= 54 ? uint32_t('a' + code - 29) : 0;
     ghostty_key_event_set_unshifted_codepoint(keyEvent, unshifted);
+    char bytes[512]; size_t count = 0;
+    check(ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes, sizeof(bytes), &count));
+    return {bytes, bytes + count};
+}
+std::vector<uint8_t> Engine::platformKey(int key, int mods, int action, const std::string& utf8, int consumedMods, uint32_t unshiftedCodepoint) {
+    if (utf8.size() > 64 || action < 0 || action > 2 || key < 0) throw std::invalid_argument("Invalid key event");
+    ghostty_key_encoder_setopt_from_terminal(keyEncoder, terminal);
+    // The iOS bridge reports Option as Alt. Ghostty resets this encoder option
+    // on every setopt_from_terminal call, so restore it for each key event.
+    const GhosttyOptionAsAlt optionAsAlt = GHOSTTY_OPTION_AS_ALT_TRUE;
+    ghostty_key_encoder_setopt(keyEncoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &optionAsAlt);
+    ghostty_key_event_set_action(keyEvent, GhosttyKeyAction(action));
+    ghostty_key_event_set_key(keyEvent, GhosttyKey(key));
+    // AltGr's synthetic Ctrl/Alt are layout selectors, not terminal chords.
+    // Ghostty's legacy Ctrl path intentionally consults raw modifiers, so
+    // normalize these selectors as well as recording consumed modifiers.
+    auto effective = mods & ~(consumedMods & (GHOSTTY_MODS_CTRL | GHOSTTY_MODS_ALT));
+    ghostty_key_event_set_mods(keyEvent, GhosttyMods(effective));
+    ghostty_key_event_set_consumed_mods(keyEvent, GhosttyMods(consumedMods));
+    ghostty_key_event_set_utf8(keyEvent, utf8.data(), utf8.size());
+    ghostty_key_event_set_unshifted_codepoint(keyEvent, unshiftedCodepoint);
     char bytes[512]; size_t count = 0;
     check(ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes, sizeof(bytes), &count));
     return {bytes, bytes + count};

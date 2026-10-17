@@ -1,0 +1,4 @@
+module SSHepherdTerminal {
+  header "apple.h"
+  export *
+}
